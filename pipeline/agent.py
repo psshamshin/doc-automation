@@ -180,8 +180,13 @@ def run(ds, units: List[Dict[str, Any]], conf: Dict[str, Any], decisions: Dict[s
             prompt = render_task(ds, item, by_id, conf, final)
             save_text(adir / "tasks" / f"{item['id']}.md", prompt)
             old = prev.get(item["id"], {})
-            if old.get("status") in ("done", "needs_human") and not redo and (adir / "answers" / f"{item['id']}.json").is_file():
+            answer_path = adir / "answers" / f"{item['id']}.json"
+            ready = check_answer(answer_path, item) if answer_path.is_file() and not redo else {"ok": False}
+            if old.get("status") in ("done", "needs_human") and ready["ok"]:
                 item.update(status=old["status"], note="уже выполнено раньше")
+            elif ready["ok"]:
+                # ответ записан вручную запущенным агентом (например, из чата в редакторе)
+                item.update(status=ready["answer"]["status"], note=str(ready["answer"]["summary"])[:300])
             elif dry_run or not available:
                 item.update(status="prepared", note="задание подготовлено, агент не запускался")
             else:
