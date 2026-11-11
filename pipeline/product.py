@@ -60,6 +60,7 @@ LINKS_FILE = "knowledge/links.json"          # адреса внешних си�
 
 # ---- папки проекта
 INPUT_DIR = "input"
+REFERENCE_DIR = "reference"   # документация техписа для сравнения, отдельно от входных данных агента
 OUTPUT_DIR = "output"
 RULES_DOC = "docs/RULES.md"
 

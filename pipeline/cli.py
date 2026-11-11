@@ -84,6 +84,13 @@ def cmd_agent(ds: Dataset, args) -> None:
     if unknown:
         raise DatasetError("в файле проверки нет задач: " + ", ".join(unknown) + ". Перезапустите collect")
     decided = V.decisions(val, us)
+    if AG.agent_cmd(args.cmd) and not args.dry_run:
+        exposed = ds.reference_exposed()
+        if exposed and not args.allow_reference:
+            raise DatasetError(
+                "агент не запущен: в проекте лежит документация техписа или результаты сравнения, агент может их прочитать:\n  "
+                + "\n  ".join(exposed) + "\nУберите их из папки проекта на время работы агента (документацию техписа - в любое "
+                "место вне проекта, потом укажите его: compare --reference <папка>). Запустить все равно: --allow-reference")
     planned = load_json(ds.data_dir / "07_review.json").get("planned_renames", [])
     for r in DRAFT.apply_renames(ds, planned, decided):
         log(f"замена кодом: [{r['lang']}] {r['file']}: «{r['old']}» -> «{r['new']}» ({r['unit']})")
@@ -107,8 +114,10 @@ def cmd_agent(ds: Dataset, args) -> None:
 
 
 def cmd_compare(ds: Dataset, args) -> None:
-    if not ds.has(P.SLOT_DOCS_REFERENCE):
-        raise DatasetError(f"в наборе данных нет папки {P.SLOT_DOCS_REFERENCE}: сравнивать не с чем")
+    if args.reference or not ds.has(P.SLOT_DOCS_REFERENCE):
+        if not ds.use_reference(args.reference):
+            raise DatasetError("сравнивать не с чем: документации нового релиза от техписа нет ни во входных данных, "
+                               f"ни в папке {P.REFERENCE_DIR}/. Укажите ее: compare --reference <папка>")
     RUN.step_reference(ds)
     RUN.step_compare(ds)
 
@@ -152,6 +161,9 @@ def main(argv: Optional[List[str]] = None) -> None:
     ap.add_argument("--approve", action="store_true", help="agent: считать решения проверенными без отметки в review.md")
     ap.add_argument("--redo", action="store_true", help="agent: выполнить заново уже выполненные задания")
     ap.add_argument("--cmd", help="agent: команда запуска агента; текст задания подается ей на стандартный ввод")
+    ap.add_argument("--reference", help="compare: папка с документацией техписа, если ее нет во входных данных")
+    ap.add_argument("--allow-reference", action="store_true",
+                    help="agent: запустить, даже если документация техписа лежит в проекте (результат нельзя считать чистым)")
     ap.add_argument("--timeout", type=int, default=1800, help="agent: секунд на одно задание")
     args = ap.parse_args(argv)
     t0 = time.time()

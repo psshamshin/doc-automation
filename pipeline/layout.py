@@ -167,6 +167,37 @@ class Dataset:
     def has(self, slot: str) -> bool:
         return self.roles.get(slot) is not None
 
+    def use_reference(self, path: Optional[str] = None) -> bool:
+        """Документация техписа для сравнения из отдельной папки: параметр --reference, иначе reference/<набор>/
+        или reference/. Так ее можно не класть во входные данные, пока работает агент."""
+        cands = [Path(path)] if path else [self.base / P.REFERENCE_DIR / self.name, self.base / P.REFERENCE_DIR]
+        for d in cands:
+            if not d.is_dir():
+                if path:
+                    raise DatasetError(f"папка не найдена: {d}")
+                continue
+            unpack_archives(d)
+            docs = find_roots(d)["docs"]
+            if len(docs) == 1:
+                self.roles[P.SLOT_DOCS_REFERENCE] = docs[0]
+                return True
+            if path or docs:
+                raise DatasetError(f"в папке {d} должна быть ровно одна документация (папка с {P.DOCS_MARKER}), найдено: {len(docs)}")
+        return False
+
+    def reference_exposed(self) -> List[str]:
+        """Что из документации техписа и результатов сравнения сейчас лежит там, где это может прочитать агент."""
+        found = []
+        if self.has(P.SLOT_DOCS_REFERENCE) and self.dir in self.slot(P.SLOT_DOCS_REFERENCE).resolve().parents:
+            found.append(self.rel(self.slot(P.SLOT_DOCS_REFERENCE)))
+        for name in (P.OUT_REFERENCE, P.OUT_COMPARE):
+            if (self.run_dir / name).exists():
+                found.append(self.rel(self.run_dir / name))
+        for d in (self.base / P.REFERENCE_DIR,):
+            if d.is_dir() and any(p.name != "README.md" for p in d.iterdir()):
+                found.append(self.rel(d))
+        return found
+
     def jira_files(self) -> List[Path]:
         """Выгрузки Jira: файлы в корне набора данных и в папках, имя которых начинается с 'jira'."""
         out = []

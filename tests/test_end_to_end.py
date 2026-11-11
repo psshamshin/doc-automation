@@ -21,6 +21,8 @@ DATA_FILES = ["01_changelog.json", "02_code_diff.json", "02_reachability.json", 
 
 
 def run(command, out, *extra):
+    if command == "agent" and "--cmd" in extra:
+        extra = (*extra, "--allow-reference")   # в придуманных данных документация техписа лежит рядом
     CLI.main([command, str(DEMO), "--out", str(out), *extra])
 
 
@@ -111,6 +113,9 @@ class CollectTest(unittest.TestCase):
         cmp_ = json.loads(self.text(P.OUT_COMPARE, "compare.json"))
         self.assertIn("user-manual/100_Orders.md", cmp_["rus"]["only_reference"])
         self.assertIn("release-notes/020.md", cmp_["rus"]["both"])
+        page = self.text(P.OUT_COMPARE, "compare.html")
+        self.assertIn("user-manual/100_Orders.md", page)
+        self.assertIn("<th>Пайплайн", page)
 
 
 class AgentTest(unittest.TestCase):
@@ -222,6 +227,79 @@ class ProjectFilesTest(unittest.TestCase):
         by = {r["release"]: r for r in kn["releases"]}
         self.assertEqual(by["2.3.0"]["ui"], "2.11.0")
         self.assertEqual(by["2.2.0"]["ui"], "2.9.4")
+
+
+class ReferenceGuardTest(unittest.TestCase):
+    """Агент не запускается, пока документация техписа лежит там, где он может ее прочитать."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.data, self.out, self.ref = self.tmp / "data", self.tmp / "out", self.tmp / "elsewhere"
+        shutil.copytree(DEMO, self.data)
+        (self.data / "dataset.json").write_text(json.dumps({"doc_map": "doc_map.json", "jira_task_url": "", "release": "0.2.0"}), encoding="utf-8")
+
+    def agent(self, *extra):
+        CLI.main(["agent", str(self.data), "--out", str(self.out), "--approve", "--cmd", STUB, *extra])
+
+    def test_refuses_when_reference_is_in_input(self):
+        CLI.main(["collect", str(self.data), "--out", str(self.out)])
+        with self.assertRaises(SystemExit) as cm:
+            self.agent()
+        self.assertEqual(cm.exception.code, 2)
+        self.assertFalse((self.out / P.OUT_AGENT / "queue.json").exists())
+
+    def test_runs_when_reference_is_outside_then_compare_by_path(self):
+        shutil.move(str(self.data / P.SLOT_DOCS_REFERENCE), str(self.ref))
+        CLI.main(["collect", str(self.data), "--out", str(self.out)])
+        self.agent()
+        self.assertTrue((self.out / P.OUT_AGENT / "queue.json").is_file())
+        CLI.main(["compare", str(self.data), "--out", str(self.out), "--reference", str(self.ref)])
+        self.assertTrue((self.out / P.OUT_COMPARE / "compare.html").is_file())
+        with self.assertRaises(SystemExit):     # после сравнения результаты лежат в output: агент снова не запускается
+            self.agent("--redo")
+
+    def test_preparing_tasks_is_always_allowed(self):
+        CLI.main(["collect", str(self.data), "--out", str(self.out)])
+        CLI.main(["agent", str(self.data), "--out", str(self.out), "--approve"])
+        self.assertTrue((self.out / P.OUT_AGENT / "queue.json").is_file())
+
+
+class CompareViewTest(unittest.TestCase):
+    def test_three_columns(self):
+        from pipeline import compare_view as CV
+        base = "заголовок\nстарая строка\nудалят оба\nконец\n"
+        gen = "заголовок\nновая строка\nконец\nдобавил пайплайн\n"
+        ref = "заголовок\nновая строка\nконец\n"
+        fr = CV.file_rows(base, gen, ref)
+        self.assertEqual(fr["stats"], {"same": 2, "diff": 0, "gen": 1, "ref": 0})
+        changed = next(r for r in fr["rows"] if r[3] == "chg")
+        self.assertEqual(changed[0], "<mark>старая</mark> строка")       # в базе выделено замененное слово
+        self.assertEqual(changed[1], "<mark>новая</mark> строка")
+        self.assertEqual(changed[1], changed[2])
+        self.assertEqual([r[3] for r in fr["rows"]][-1], "add")
+        self.assertEqual(fr["rows"][-1][4], "pad")
+
+    def test_different_edits_of_same_line(self):
+        from pipeline import compare_view as CV
+        fr = CV.file_rows("версия 1\n", "версия 2\n", "версия 3\n")
+        self.assertEqual(fr["stats"], {"same": 0, "diff": 1, "gen": 0, "ref": 0})
+
+    def test_html_is_escaped_and_page_is_self_contained(self):
+        from pipeline import compare_view as CV
+        fr = CV.file_rows("a <b>\n", "a <script>x</script>\n", "a <b>\n")
+        self.assertIn("&lt;", fr["rows"][0][1])
+        self.assertNotIn("<script", fr["rows"][0][1])
+        page = CV.render_page({"rus": [{"path": "p.md", "kind": "gen", **fr}]}, "Сравнение")
+        self.assertNotIn("<script>x</script>", page)
+        self.assertNotIn("http://", page)
+        self.assertNotIn("https://", page)
+
+    def test_new_file_only_at_reference(self):
+        from pipeline import compare_view as CV
+        fr = CV.file_rows(None, None, "новая страница\n")
+        self.assertTrue(fr["base_missing"] and fr["gen_missing"] and not fr["ref_missing"])
+        self.assertEqual(fr["stats"]["ref"], 1)
 
 
 class NoAgentConfiguredTest(unittest.TestCase):

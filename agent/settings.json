@@ -2,6 +2,7 @@
   "permissions": {
     "deny": [
       "Read(./input/*/docs-reference/**)",
+      "Read(./reference/**)",
       "Read(./output/*/reference/**)",
       "Read(./output/*/compare/**)",
       "Edit(./input/**)",
