@@ -21,6 +21,8 @@ def project(tmp: Path, releases=None, slots=None) -> Path:
     dst = tmp / P.INPUT_DIR / "demo"
     for s in slots or [P.SLOT_CODE_OLD, P.SLOT_CODE_NEW, P.SLOT_DOCS_OLD, P.SLOT_DOCS_REFERENCE]:
         shutil.copytree(DEMO / s, dst / s)
+    shutil.copy(DEMO / "doc_map.json", dst / "doc_map.json")
+    shutil.copy(DEMO / "dataset.json", dst / "dataset.json")
     return tmp
 
 
@@ -91,11 +93,68 @@ class DatasetTest(unittest.TestCase):
         notes = Dataset("demo", project_root=root).versions["notes"]
         self.assertTrue(any("от одного релиза" in n for n in notes))
 
-    def test_missing_folder(self):
+    def test_missing_code(self):
         root = project(self.tmp, slots=[P.SLOT_CODE_OLD, P.SLOT_DOCS_OLD])
         with self.assertRaises(DatasetError) as cm:
             Dataset("demo", project_root=root)
-        self.assertIn(P.SLOT_CODE_NEW, str(cm.exception))
+        self.assertIn("ровно два варианта кода", str(cm.exception))
+
+    def test_any_folder_names_roles_by_version(self):
+        root = project(self.tmp)
+        d = root / P.INPUT_DIR / "demo"
+        (d / P.SLOT_CODE_OLD).rename(d / "zzz-frontend")          # старый код с именем, которое сортируется последним
+        (d / P.SLOT_CODE_NEW).rename(d / "aaa-frontend")
+        (d / P.SLOT_DOCS_OLD).rename(d / "manual-b")
+        (d / P.SLOT_DOCS_REFERENCE).rename(d / "manual-a")
+        ds = Dataset("demo", project_root=root)
+        self.assertEqual(ds.slot(P.SLOT_CODE_OLD).name, "zzz-frontend")
+        self.assertEqual(ds.slot(P.SLOT_CODE_NEW).name, "aaa-frontend")
+        self.assertEqual(ds.slot(P.SLOT_DOCS_OLD).name, "manual-b")
+        self.assertEqual(ds.slot(P.SLOT_DOCS_REFERENCE).name, "manual-a")
+        self.assertEqual((ds.versions["ui_old"], ds.versions["ui_new"]), ("0.8.0", "0.10.0"))
+
+    def test_archives_are_unpacked(self):
+        root = project(self.tmp)
+        d = root / P.INPUT_DIR / "demo"
+        for slot, fmt in ((P.SLOT_CODE_NEW, "zip"), (P.SLOT_DOCS_OLD, "gztar")):
+            shutil.make_archive(str(d / f"{slot}-archive"), fmt, root_dir=d, base_dir=slot)
+            shutil.rmtree(d / slot)
+        ds = Dataset("demo", project_root=root)
+        self.assertEqual(sorted(ds.unpacked), sorted([f"{P.SLOT_CODE_NEW}-archive.zip", f"{P.SLOT_DOCS_OLD}-archive.tar.gz"]))
+        self.assertIn(P.UNPACKED_DIR, ds.slot(P.SLOT_CODE_NEW).parts)
+        self.assertEqual(ds.versions["ui_new"], "0.10.0")
+        self.assertEqual(Dataset("demo", project_root=root).unpacked, [])   # второй раз не распаковывает
+
+    def test_archive_with_path_outside_is_rejected(self):
+        import zipfile
+        root = project(self.tmp)
+        with zipfile.ZipFile(root / P.INPUT_DIR / "demo" / "bad.zip", "w") as z:
+            z.writestr("../../evil.txt", "x")
+        with self.assertRaises(DatasetError):
+            Dataset("demo", project_root=root)
+        self.assertFalse((root / "evil.txt").exists())
+
+    def test_data_directly_in_input_folder(self):
+        root = project(self.tmp)
+        inbox = root / P.INPUT_DIR
+        for p in list((inbox / "demo").iterdir()):
+            p.rename(inbox / p.name)
+        (inbox / "demo").rmdir()
+        ds = Dataset(None, project_root=root)
+        self.assertEqual(ds.dir, inbox.resolve())
+        self.assertEqual(ds.name, "0.2.0")   # результаты называются по версии релиза
+
+    def test_single_dataset_needs_no_name(self):
+        root = project(self.tmp)
+        self.assertEqual(Dataset(None, project_root=root).name, "demo")
+
+    def test_jira_files(self):
+        root = project(self.tmp)
+        d = root / P.INPUT_DIR / "demo"
+        (d / "export.xml").write_text("<rss/>", encoding="utf-8")
+        (d / "jira-tasks").mkdir()
+        (d / "jira-tasks" / "tasks.txt").write_text("GUI-105 [point] Фильтр по дате", encoding="utf-8")
+        self.assertEqual([p.name for p in Dataset("demo", project_root=root).jira_files()], ["export.xml", "tasks.txt"])
 
     def test_remember(self):
         path = self.tmp / "releases.json"

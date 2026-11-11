@@ -73,7 +73,7 @@ def step_collect(ds: Dataset) -> None:
     save_json(data / "03_i18n_diff.json", full)
 
     log("5/5 Jira")
-    issues = JIRA.load_dir(ds.slot(P.SLOT_JIRA))
+    issues = JIRA.load_files(ds.jira_files())
     save_json(data / "04_jira.json", issues)
 
 

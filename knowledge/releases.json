@@ -1,37 +1,10 @@
 {
-  "_about": "База знаний о релизах: какой версии продукта какая версия интерфейса (point-ui) соответствует. Пополняется командами 'python3 -m pipeline learn <набор>' (из release notes документации) и 'collect <набор> --release <версия>'. Поля: release - версия продукта, ui - версия интерфейса, date - дата релиза, components - таблица версий из release notes, reference_ignore - правки техписа, не связанные с задачами (не учитываются при сравнении).",
+  "_about": "База знаний о релизах: какой версии продукта какая версия интерфейса (point-ui) соответствует. Пополняется командами 'python3 -m pipeline learn' (из release notes документации) и 'collect --release <версия>'. Поля: release - версия продукта, ui - версия интерфейса, date - дата релиза, components - таблица версий из release notes.",
   "releases": [
     {
       "release": "2.3.0",
       "ui": "2.11.0",
-      "date": "05.10.2026",
-      "reference_ignore": [
-        {
-          "lang": "eng",
-          "path": "administrator-manual/030_Architecture.md",
-          "why": "уборка префикса LUNA, без задачи"
-        },
-        {
-          "lang": "eng",
-          "path": "administrator-manual/070_Update.md",
-          "why": "битые ссылки, без задачи"
-        },
-        {
-          "lang": "eng",
-          "path": "includes/101_Lists_end.md",
-          "why": "опечатка в ссылке, без задачи"
-        },
-        {
-          "lang": "eng",
-          "path": "index.md",
-          "why": "битые ссылки, без задачи"
-        },
-        {
-          "lang": "eng",
-          "path": "user-manual/155_VMS.md",
-          "why": "LUNA name → System name, без задачи"
-        }
-      ]
+      "date": "05.10.2026"
     },
     {
       "release": "2.2.0",

@@ -72,7 +72,7 @@ class CollectTest(unittest.TestCase):
         self.assertIn("# [0.2.0] 01.03.2026 {-}", rn)
         self.assertRegex(rn, r"\| point-ui\s+\| 0\.10\.0\s+\|")
         self.assertIn("| demo-api   | 1.0.0      |", rn)
-        self.assertIn('- **[Раздел "Заказы"]**: Добавлен фильтр заказов по дате <!-- GUI-105 -->', rn)
+        self.assertIn('- **[Раздел "Заказы"]**: Добавлен фильтр заказов по дате <!-- GUI-105, источник: список изменений -->', rn)
         self.assertIn("GUI-104", rn)
         self.assertIn("**Исправленные ошибки**", rn)
         self.assertIn("Не решено, строки появятся после работы агента: NOTASK:0.10.0#7", rn)
@@ -87,8 +87,12 @@ class CollectTest(unittest.TestCase):
         self.assertIn("Проверено: [ ]", d)
         self.assertIn("| Новый релиз | 0.2.0 |", d)
         self.assertIn("версия интерфейса `SECURE_CLIENT_VER` 0.8.0 -> 0.10.0", d)
-        self.assertIn("| GUI-105 | Добавлен фильтр заказов по дате | в доку + RN (В5, Г1, Д2) |  | [x] | [ ] | [ ] |", d)
+        self.assertIn("| GUI-105 | Добавлен фильтр заказов по дате | в доку + RN (В5, Г1, Д2) | - | [x] | [ ] | [ ] |", d)
         self.assertIn("| И1: продукт не определен | [ ] | [ ] | [x] |", d)
+        self.assertIn("[docs/RULES.md](", d)
+        self.assertIn("## Черновик release notes: требует просмотра", d)
+        self.assertIn('| GUI-105 | Изменения | Раздел "Заказы" | Добавлен фильтр заказов по дате | список изменений |', d)
+        self.assertNotIn("Коды в скобках", d)
         self.assertEqual(self.text("jira_query.txt").strip(), "key in (GUI-101, GUI-102, GUI-103, GUI-104, GUI-105, GUI-106)")
 
     def test_no_absolute_paths_and_no_time(self):

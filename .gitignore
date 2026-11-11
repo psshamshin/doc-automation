@@ -13,5 +13,3 @@ __pycache__/
 *.pyc
 .DS_Store
 
-# адреса внутренних систем: только на этой машине
-/knowledge/local.json

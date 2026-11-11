@@ -111,11 +111,12 @@ def _from_text(path: Path) -> List[Dict[str, Any]]:
 
 
 def load_dir(d: Path) -> Dict[str, Dict[str, Any]]:
+    return load_files(sorted(d.iterdir()) if d.is_dir() else [])
+
+
+def load_files(paths: List[Path]) -> Dict[str, Dict[str, Any]]:
     issues: Dict[str, Dict[str, Any]] = {}
-    if not d.is_dir():
-        log(f"Jira: каталог {d} не найден — шаг пропущен")
-        return issues
-    for p in sorted(d.iterdir()):
+    for p in paths:
         try:
             if p.suffix.lower() == ".xml":
                 rows = _from_xml(p)

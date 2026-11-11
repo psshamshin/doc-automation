@@ -51,11 +51,13 @@ def cmd_collect(ds: Dataset, args) -> None:
     bumps = DRAFT.bump_versions(ds, units["component_versions"])
     rn = DRAFT.write_release_notes(ds, us, proposals, conf, index)
     jira = load_json(ds.data_dir / "04_jira.json")
-    status = V.write(ds.run_dir / V.FILE_NAME, ds, us, conf, bumps, rn, len(jira), force=args.force)
+    renames = DRAFT.planned_renames(ds, us)
+    status = V.write(ds.run_dir / V.FILE_NAME, ds, us, conf, bumps, rn, len(jira), force=args.force,
+                     rn_lines=DRAFT.rn_preview(us, proposals, index), renames=renames)
     status_text = {"created": "создан, ждет проверки", "kept": "ваши отметки сохранены",
                    "updated": "обновлен: решения правил изменились, отметка «Проверено» снята"}[status]
     save_json(ds.data_dir / "07_review.json", {"versions": ds.versions, "proposals": proposals, "confidence": conf,
-                                              "code_edits": bumps, "release_notes": rn})
+                                              "code_edits": bumps, "release_notes": rn, "planned_renames": renames})
     q = DRAFT.jira_query(us)
     if q:
         save_text(ds.run_dir / "jira_query.txt", q + "\n")
@@ -80,6 +82,9 @@ def cmd_agent(ds: Dataset, args) -> None:
     if unknown:
         raise DatasetError("в файле проверки нет задач: " + ", ".join(unknown) + ". Перезапустите collect")
     decided = V.decisions(val, us)
+    planned = load_json(ds.data_dir / "07_review.json").get("planned_renames", [])
+    for r in DRAFT.apply_renames(ds, planned, decided):
+        log(f"замена кодом: [{r['lang']}] {r['file']}: «{r['old']}» -> «{r['new']}» ({r['unit']})")
     index = load_json(ds.data_dir / "06_docs_index.json")
 
     def redraft(final):
@@ -109,6 +114,10 @@ def cmd_compare(ds: Dataset, args) -> None:
 def cmd_versions(ds: Dataset, args) -> None:
     v = ds.versions
     print(f"набор данных:                    {ds.name}")
+    for slot in (P.SLOT_CODE_OLD, P.SLOT_CODE_NEW, P.SLOT_DOCS_OLD, P.SLOT_DOCS_REFERENCE):
+        if ds.has(slot):
+            print(f"  {P.SLOTS[slot].split(',')[0]}: {ds.slot(slot).relative_to(ds.dir)}")
+    print(f"  файлов Jira: {len(ds.jira_files())}")
     print(f"новый релиз:                     {v['release']}  ({v['release_source']})")
     print(f"дата релиза:                     {v['release_date'] or 'неизвестна'}")
     print(f"документация предыдущего релиза: {v['docs_base_version']}")
@@ -133,7 +142,7 @@ COMMANDS = {"collect": cmd_collect, "agent": cmd_agent, "compare": cmd_compare, 
 def main(argv: Optional[List[str]] = None) -> None:
     ap = argparse.ArgumentParser(prog="python3 -m pipeline", description="Автоматизация документации LUNA POINT 2")
     ap.add_argument("command", choices=list(COMMANDS))
-    ap.add_argument("dataset", help="имя папки в input/ или путь к папке с данными")
+    ap.add_argument("dataset", nargs="?", help="имя папки в input/ или путь к папке с данными; можно не указывать, если набор один")
     ap.add_argument("--out", help="куда писать результаты (по умолчанию output/<набор>)")
     ap.add_argument("--release", help="версия нового релиза, если она не определилась сама; запоминается в базе знаний")
     ap.add_argument("--force", action="store_true", help="collect: пересоздать рабочую копию документации и файл проверки (стирает правки)")
@@ -146,6 +155,8 @@ def main(argv: Optional[List[str]] = None) -> None:
     t0 = time.time()
     try:
         ds = Dataset(args.dataset, out=args.out, release=args.release)
+        for a in ds.unpacked:
+            log(f"распакован архив: {a}")
         ds.run_dir.mkdir(parents=True, exist_ok=True)
         COMMANDS[args.command](ds, args)
     except DatasetError as e:

@@ -41,12 +41,22 @@ def section_label(unit: Dict[str, Any], titles: Dict[str, str], lang: str) -> st
     return P.RN_TITLES[lang]["general"]
 
 
+def rn_source(unit: Dict[str, Any]) -> Dict[str, Any]:
+    """Откуда взят текст строки release notes: название задачи в Jira, иначе значимые записи ченджлога."""
+    jira = unit.get("jira") or {}
+    title = re.sub(r"^\s*(\[[^\]]+\]\s*)+", "", jira.get("summary") or "").strip()
+    if title:
+        return {"source": "Jira", "texts": [title]}
+    return {"source": "список изменений", "texts": significant_texts(unit) or [e["text"].strip() for e in unit["entries"]]}
+
+
 def rn_block(unit: Dict[str, Any], titles: Dict[str, str], lang: str, flagged: bool, decision: str = "") -> List[str]:
     if decision == "langs":
         return [f"- **[{P.RN_TITLES[lang]['general']}]**: Изменен набор языков интерфейса. "
                 f"<!-- {unit['id']}, какие языки добавлены, уточнит агент -->", ""]
-    texts = significant_texts(unit) or [e["text"].strip() for e in unit["entries"]]
-    note = f"<!-- {unit['id']}" + (", решение не подтверждено" if flagged else "") \
+    src = rn_source(unit)
+    texts = src["texts"]
+    note = f"<!-- {unit['id']}, источник: {src['source']}" + (", решение не подтверждено" if flagged else "") \
            + (", TODO перевод" if lang != "rus" else "") + " -->"
     label = section_label(unit, titles, lang)
     if len(texts) == 1:
@@ -56,6 +66,86 @@ def rn_block(unit: Dict[str, Any], titles: Dict[str, str], lang: str, flagged: b
     if len(texts) > MAX_SUBLINES:
         out.append(f"    - ... еще записей: {len(texts) - MAX_SUBLINES}")
     return out + [""]
+
+
+def rn_preview(units: List[Dict[str, Any]], decisions: Dict[str, str], index: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Строки черновика release notes для файла проверки."""
+    titles = page_titles(index, "rus")
+    out = []
+    for u in units:
+        d = decisions.get(u["id"])
+        if d not in ("doc", "rn", "langs"):
+            continue
+        src = rn_source(u)
+        text = "Изменен набор языков интерфейса." if d == "langs" else src["texts"][0]
+        out.append({"unit": u["id"], "section": "fixes" if d == "rn" else "changes",
+                    "label": P.RN_TITLES["rus"]["general"] if d == "langs" else section_label(u, titles, "rus"),
+                    "text": text, "more": 0 if d == "langs" else len(src["texts"]) - 1,
+                    "source": "код" if d == "langs" else src["source"]})
+    return out
+
+
+# ---------------------------------------------------------------- переименования (Д4)
+
+QUOTES = "«»\"“”„'"
+
+
+def planned_renames(ds, units: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Замены названий элементов интерфейса, которые код может внести сам.
+
+    Условия: у того же ключа перевода изменился текст; старое или новое название дословно названо в
+    значимой записи задачи (значит, это изменение именно этой задачи); старое название стоит в документации
+    в кавычках. Замены только планируются: вносит их команда agent после проверки человеком.
+    """
+    lang_of = ds.rules["i18n"]["doc_lang_of_locale"]
+    out = []
+    for u in units:
+        if u["decision"]["action"]["value"] not in ("doc_and_rn", "rn_and_check_doc"):
+            continue
+        said = " ".join(significant_texts(u)).lower()
+        seen = set()
+        for c in u["i18n"]["changed"]:
+            lang = lang_of.get(c["locale"])
+            old, new = c["old"].strip(), c["new"].strip()
+            if not lang or len(old) < 4 or "{{" in old or "$t(" in old or (c["locale"], old, new) in seen:
+                continue
+            if old.lower() not in said and new.lower() not in said:
+                continue
+            seen.add((c["locale"], old, new))
+            rx = re.compile("([" + re.escape(QUOTES) + "])" + re.escape(old) + "([" + re.escape(QUOTES) + "])")
+            root = DOCS.workspace_root(ds.result_dir, lang)
+            for p in sorted(root.rglob("*.md")):
+                if P.RELEASE_NOTES_DIR in p.relative_to(root).parts:
+                    continue
+                for i, line in enumerate((read_text(p) or "").splitlines(), 1):
+                    if rx.search(line):
+                        out.append({"unit": u["id"], "lang": lang, "file": str(p.relative_to(root)), "line": i,
+                                    "old": old, "new": new})
+    return out
+
+
+def apply_renames(ds, planned: List[Dict[str, Any]], decisions: Dict[str, str]) -> List[Dict[str, Any]]:
+    """Вносит запланированные замены для задач, которые человек принял. Повторный запуск ничего не меняет."""
+    done = []
+    trace = ds.result_dir / "trace.md"
+    ttext = read_text(trace) or ""
+    for r in planned:
+        if decisions.get(r["unit"]) not in ("doc", "rn"):
+            continue
+        p = DOCS.workspace_root(ds.result_dir, r["lang"]) / r["file"]
+        text = read_text(p)
+        if text is None:
+            continue
+        rx = re.compile("([" + re.escape(QUOTES) + "])" + re.escape(r["old"]) + "([" + re.escape(QUOTES) + "])")
+        new_text = rx.sub(lambda m: m.group(1) + r["new"] + m.group(2), text)
+        if new_text != text:
+            save_text(p, new_text)
+        done.append(r)
+        row = f"| {r['unit']} | {r['lang']} | {r['file']} | (код) «{r['old']}» -> «{r['new']}» | Д4, Е3 |"
+        if row not in ttext:
+            ttext += row + "\n"
+    save_text(trace, ttext)
+    return done
 
 
 # ---------------------------------------------------------------- правки кодом
