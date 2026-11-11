@@ -1,0 +1,27 @@
+{
+  "_about": "Карта «код → раздел доки» (правило Е1). code — фрагменты пути файла или тега записи, words — слова в тексте записи. Пути доки — от docs/src/MD_<lang>/docs. Это подсказки для агента, не окончательное решение.",
+  "map": [
+    {"name": "navigation", "code": ["src/app/navigation", "navbar"], "words": ["меню", "навигац"], "docs": ["user-manual/060_Sections.md", "user-manual/050_Work.md"]},
+    {"name": "permissions", "code": ["packages/permissions", "permission"], "words": ["прав доступа", "роли", "роль "], "docs": ["user-manual/050_Work.md", "user-manual/165_Users.md"]},
+    {"name": "auth_theme", "code": ["pages/auth", "useAppTheme", "navbar-panel", "ThemeButton"], "words": ["тема ", "тему", "выход из аккаунта", "входе"], "docs": ["user-manual/050_Work.md"]},
+    {"name": "locales", "code": ["src/app/translations"], "words": ["локал", "язык"], "docs": ["user-manual/050_Work.md"]},
+    {"name": "search", "code": ["pages/search", "/search/"], "words": ["поиск"], "docs": ["user-manual/100_Search.md"]},
+    {"name": "events_archive", "code": ["event-list", "events/filters", "point/event-list-page"], "words": ["архив событий"], "docs": ["user-manual/080_Archive.md"]},
+    {"name": "event_details", "code": ["event-details", "event-media-viewer"], "words": ["детали события", "деталей события"], "docs": ["user-manual/085_Event_details.md"]},
+    {"name": "operator_panel", "code": ["event-top-match", "workspace", "operator"], "words": ["панел оператора", "панели оператора"], "docs": ["user-manual/070_Operator_panel.md"]},
+    {"name": "face_details", "code": ["face-details", "face-page"], "words": ["деталями лица", "странице лица"], "docs": ["user-manual/075_Face_details.md"]},
+    {"name": "cards", "code": ["point-cards", "card-page", "person-card", "create-card", "/cards"], "words": ["картотек", "карточк"], "docs": ["user-manual/110_Card_index.md"]},
+    {"name": "lists", "code": ["list-details", "list-list-page", "attach-cards-to-list", "/lists"], "words": ["списк"], "docs": ["user-manual/130_Lists.md"]},
+    {"name": "handlers", "code": ["handlers"], "words": ["сценари", "обработчик"], "docs": ["user-manual/140_Handlers.md"]},
+    {"name": "sources", "code": ["pages/sources", "source-stream-settings", "pages/queue", "editStream", "pages/stream"], "words": ["источник"], "docs": ["user-manual/150_Event_sources.md"]},
+    {"name": "vms", "code": ["/vms"], "words": ["vms"], "docs": ["user-manual/155_VMS.md"]},
+    {"name": "video_analytics", "code": ["video-analytics", "va-reporter", "api-bindings/streams", "api-bindings/src/streams"], "words": ["видеоаналитик"], "docs": ["user-manual/160_Videoanalysts.md", "user-manual/115_Analytics_archive.md"]},
+    {"name": "users", "code": ["pages/accounts", "pages/departments"], "words": ["пользовател", "подразделен"], "docs": ["user-manual/165_Users.md"]},
+    {"name": "statistics", "code": ["statistic"], "words": ["статистик"], "docs": ["user-manual/166_Statistics.md"]},
+    {"name": "notifications", "code": ["pages/notifications"], "words": ["уведомлен"], "docs": ["user-manual/170_Notification.md"]},
+    {"name": "monitoring", "code": ["monitoring"], "words": ["мониторинг"], "docs": ["user-manual/180_Monitoring.md"]},
+    {"name": "tasks", "code": ["pages/tasks", "time-tracking-tasks"], "words": [], "docs": ["user-manual/120_Tasks.md"]},
+    {"name": "videowall", "code": ["videowall", "video-wall"], "words": ["видеостен"], "docs": ["user-manual/090_Videowall.md"]},
+    {"name": "licenses", "code": ["license"], "words": ["лиценз"], "docs": ["user-manual/190_Licenses.md"]}
+  ]
+}

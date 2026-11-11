@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version-file: '.python-version'
+
+      - name: Compile
+        run: python -m py_compile pipeline/*.py
+
+      - name: Check JSON in config and schemas
+        run: |
+          for f in config/*.json schemas/*.json; do
+            python -m json.tool "$f" > /dev/null || { echo "bad JSON: $f"; exit 1; }
+          done
+
+      - name: Unit tests
+        run: python -m unittest discover -s tests
+
+      - name: Pipeline on synthetic fixture
+        run: |
+          python -m pipeline.run --config config/release-fixture.json --force
+          python -m pipeline.run --config config/release-fixture.json --steps etalon,compare
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: fixture-report
+          path: runs/fixture/report.md
+          if-no-files-found: error

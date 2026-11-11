@@ -1,0 +1,49 @@
+{
+  "_about": "Карта доки для синтетической фикстуры.",
+  "map": [
+    {
+      "name": "navigation",
+      "code": [
+        "src/app/navigation"
+      ],
+      "words": [
+        "меню"
+      ],
+      "docs": [
+        "user-manual/050_Work.md"
+      ]
+    },
+    {
+      "name": "locales",
+      "code": [],
+      "words": [],
+      "docs": [
+        "user-manual/050_Work.md"
+      ]
+    },
+    {
+      "name": "orders",
+      "code": [
+        "orders-filter"
+      ],
+      "words": [
+        "заказ"
+      ],
+      "docs": [
+        "user-manual/100_Orders.md"
+      ]
+    },
+    {
+      "name": "page_title",
+      "code": [
+        "page-title"
+      ],
+      "words": [
+        "заголов"
+      ],
+      "docs": [
+        "user-manual/050_Work.md"
+      ]
+    }
+  ]
+}
