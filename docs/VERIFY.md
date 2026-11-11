@@ -10,7 +10,7 @@ python3 -m py_compile pipeline/*.py tests/*.py
 python3 -m unittest discover -s tests
 ```
 
-Ожидается: `Ran 119 tests ... OK`. Тест `test_rerun_is_identical` запускает сбор на придуманных данных
+Ожидается: `Ran 120 tests ... OK`. Тест `test_rerun_is_identical` запускает сбор на придуманных данных
 дважды и сравнивает контрольные суммы всех результатов. Тесты `AgentTest` проверяют подготовку заданий,
 запуск и проверку ответов с заглушкой вместо агента.
 

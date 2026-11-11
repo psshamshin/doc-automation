@@ -302,6 +302,27 @@ class CompareViewTest(unittest.TestCase):
         self.assertEqual(fr["stats"]["ref"], 1)
 
 
+class ManualAgentTest(unittest.TestCase):
+    """Агент запускается вручную (чат в редакторе): пайплайн готовит задания и подхватывает готовые ответы."""
+
+    def test_answers_written_by_hand_are_picked_up(self):
+        out = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, out, True)
+        run("collect", out)
+        run("agent", out, "--approve")                       # агент не настроен: только задания
+        answers = out / P.OUT_AGENT / "answers"
+        answers.mkdir(parents=True, exist_ok=True)
+        (answers / "NOTASK_0.10.0_7__decide.json").write_text(json.dumps(
+            {"item": "NOTASK_0.10.0_7__decide", "status": "done", "summary": "сборка, пользователю не видно", "decision": "skip"},
+            ensure_ascii=False), encoding="utf-8")
+        run("agent", out, "--approve")
+        q = {i["id"]: i for i in json.loads((out / P.OUT_AGENT / "queue.json").read_text(encoding="utf-8"))["items"]}
+        self.assertEqual(q["NOTASK_0.10.0_7__decide"]["status"], "done")
+        self.assertEqual(q["GUI-105__write_doc"]["status"], "prepared")
+        final = json.loads((out / P.OUT_AGENT / "final_decisions.json").read_text(encoding="utf-8"))
+        self.assertEqual(final["NOTASK:0.10.0#7"], "skip")
+
+
 class NoAgentConfiguredTest(unittest.TestCase):
     def test_tasks_are_prepared_when_no_agent_command(self):
         out = Path(tempfile.mkdtemp())
