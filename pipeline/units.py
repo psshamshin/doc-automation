@@ -135,6 +135,13 @@ def entry_flags(e: Dict[str, Any], rules) -> Dict[str, bool]:
             "significant": not other and not test and not technical}
 
 
+def is_other_product_path(path: str, rules) -> bool:
+    """Файл другого продукта: метка в имени ('.point3.') или папка другого приложения (изменение 7)."""
+    prod = rules["product"]
+    return any(m in path for m in prod["other_product_file_markers"]) or \
+        any(path.startswith(d + "/") for d in prod["other_app_dirs"])
+
+
 def significant_entries(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return [e for e in entries if e["_flags"]["significant"]]
 
@@ -192,6 +199,12 @@ def decide_visibility(sig_entries, files, i18n, rules) -> Dict[str, Any]:
         return {"value": "not_visible", "rule": "Г4", "reasons": [f"только файлы категорий {sorted(cats)}"]}
     if files and cats <= {"style"} | set(vis["invisible_categories"]):
         return {"value": "style_only", "rule": "Г3", "reasons": ["только стили: в доку не идет, возможна пересъемка скрина"]}
+    # Г3 по тексту (изменение 8): все значимые записи - исправления оформления
+    style_words = vis.get("style_keywords", [])
+    if style_words and all(e["type"] == "fix" and _kw(e["text"], style_words) for e in sig_entries):
+        words = sorted({w for e in sig_entries for w in _kw(e["text"], style_words)})
+        return {"value": "style_only", "rule": "Г3",
+                "reasons": ["все значимые записи - исправления оформления (" + ", ".join(words) + "), тексты интерфейса не менялись"]}
     ui = [e for e in sig_entries if e["_flags"]["ui"]]
     if ui:
         words = sorted({w for e in ui for w in _kw(e["text"], vis["ui_keywords"])})
@@ -287,7 +300,15 @@ def action_of(product, visibility, klass) -> Dict[str, str]:
 # ---------------------------------------------------------------- сборка
 
 def build_units(changelog: Dict[str, Any], code: Dict[str, Any], reach: Set[str], i18n_rows_old, i18n_rows_new,
-                i18n_diff_fn, locale_added: List[str], jira: Dict[str, Dict[str, Any]], rules, doc_map) -> List[Dict[str, Any]]:
+                i18n_diff_fn, locale_added: List[str], jira: Dict[str, Dict[str, Any]], rules, doc_map,
+                i18n_usage: Optional[Dict[str, List[str]]] = None) -> List[Dict[str, Any]]:
+    i18n_usage = i18n_usage or {}
+
+    def only_other_product(keys: List[str]) -> bool:
+        """Текст используется в коде, и все места использования - файлы другого продукта."""
+        used = [p for k in keys for p in i18n_usage.get(k, [])]
+        return bool(used) and all(is_other_product_path(p, rules) for p in used)
+
     changed = code["files"]
     by_path = {f["path"]: f for f in changed}
     # глобальные множества текстов по локалям: строка, перенесённая в другой файл, — не изменение
@@ -321,7 +342,9 @@ def build_units(changelog: Dict[str, Any], code: Dict[str, Any], reach: Set[str]
             files.append(f)
         # значимые записи и файлы, привязанные только к ним (изменение 1): все доказательства считаются по ним
         rel_entries = significant_entries(g["entries"])
-        rel_paths = {p for e in rel_entries for p in g["_entry_files"].get(e["id"], set())}
+        # файлы другого продукта доказательством для POINT 2 не считаются (изменение 7)
+        rel_paths = {p for e in rel_entries for p in g["_entry_files"].get(e["id"], set())
+                     if not is_other_product_path(p, rules)}
         rel_files = [f for f in files if f["path"] in rel_paths]
         for f in files:
             f["relevant"] = f["path"] in rel_paths
@@ -336,6 +359,11 @@ def build_units(changelog: Dict[str, Any], code: Dict[str, Any], reach: Set[str]
             "changed": [c for c in d["changed_same_key"]
                         if not (c["old"] in g_new.get(c["locale"], set()) and c["new"] in g_old.get(c["locale"], set()))],
         }
+        foreign = [x for x in i18n["added"] if only_other_product(x["where"])]
+        foreign += [c for c in i18n["changed"] if only_other_product([f"{c['file']}::{c['key']}"])]
+        i18n["added"] = [x for x in i18n["added"] if not only_other_product(x["where"])]
+        i18n["changed"] = [c for c in i18n["changed"] if not only_other_product([f"{c['file']}::{c['key']}"])]
+        i18n["other_product"] = [{"locale": x["locale"], "value": x.get("value", x.get("new"))} for x in foreign]
         jira_issue = jira.get(g["task"]) if g["task"] else None
         product = decide_product(g, jira_issue, g["_entry_files"], reach, rules)
         visibility = decide_visibility(rel_entries, rel_files, i18n, rules)

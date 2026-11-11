@@ -1,0 +1,46 @@
+# Автоматическая проверка кода. Запускается сама при каждом изменении.
+name: Tests
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version-file: '.python-version'
+
+      - name: Compile
+        run: python -m py_compile pipeline/*.py tests/*.py
+
+      - name: Check JSON in knowledge and agent
+        run: |
+          for f in knowledge/*.json agent/*.json tests/data/demo/*.json; do
+            python -m json.tool "$f" > /dev/null || { echo "bad JSON: $f"; exit 1; }
+          done
+
+      - name: Unit tests
+        run: python -m unittest discover -s tests
+
+      - name: Pipeline on demo data
+        run: |
+          python -m pipeline collect tests/data/demo
+          python -m pipeline compare tests/data/demo
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: demo-review
+          path: |
+            output/demo/review.md
+            output/demo/report.md
+          if-no-files-found: error

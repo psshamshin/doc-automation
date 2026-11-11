@@ -1,0 +1,42 @@
+# Задача 1. Сбор изменений. Запускается вручную: Actions -> "1. Сбор изменений" -> Run workflow.
+# Сейчас работает только на придуманных данных: настоящих кода и документации в этом репозитории нет.
+name: 1. Сбор изменений
+
+on:
+  workflow_dispatch:
+    inputs:
+      dataset:
+        description: 'Набор данных (папка с данными в репозитории)'
+        required: true
+        default: 'tests/data/demo'
+
+permissions:
+  contents: read
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version-file: '.python-version'
+
+      - name: Collect changes and build the review file
+        env:
+          DATASET: ${{ inputs.dataset }}
+        run: python -m pipeline collect "$DATASET" --out output/run
+
+      - name: Show the review file
+        run: cat output/run/review.md >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: review
+          path: |
+            output/run/review.md
+            output/run/report.md
+            output/run/jira_query.txt
+            output/run/result/
+          if-no-files-found: error

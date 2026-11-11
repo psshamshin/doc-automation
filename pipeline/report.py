@@ -74,6 +74,8 @@ def build_report(cfg, changelog, code, reach_info, i18n_total, jira, units, unat
             L.append(f"- Строки UI: +{len(ch['added'])} / −{len(ch['removed'])} / изменено {len(ch['changed'])}")
             for c in ch["changed"][:6]:
                 L.append(f"    - [{c['locale']}] «{_cell(c['old'])}» → «{_cell(c['new'])}»")
+        if ch.get("other_product"):
+            L.append(f"- Строки UI только для другого продукта (не учитываются): {len(ch['other_product'])}")
         if u.get("doc_mentions"):
             L.append("- Старые тексты встречаются в базовой доке:")
             for lang, hits in u["doc_mentions"].items():

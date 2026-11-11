@@ -1,9 +1,9 @@
-"""Правила В, Г, Д: признаки записей и решения по единицам на синтетической фикстуре."""
+"""Правила В, Г, Д: признаки записей и решения по задачам на придуманных данных."""
 
 import unittest
 
 from pipeline import units as U
-from tests.helpers import RULES, entry, fixture_units
+from tests.helpers import RULES, demo_units, entry
 
 
 class EntryFlagsTest(unittest.TestCase):
@@ -85,17 +85,17 @@ class ActionTest(unittest.TestCase):
         self.assertEqual(self.act("point2", "visible", "Д3"), "doc_and_rn")
 
 
-class FixtureUnitsTest(unittest.TestCase):
+class DemoUnitsTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.units = fixture_units()
+        cls.units = demo_units()
 
     def decision(self, uid):
         d = self.units[uid]["decision"]
         return d["product"]["rule"], d["visibility"]["rule"], d["class_draft"]["value"], d["action"]["value"]
 
     def test_grouping(self):
-        self.assertEqual(sorted(self.units), ["GUI-101", "GUI-102", "GUI-103", "GUI-104", "GUI-105", "GUI-106", "NOTASK:1.2.0#7"])
+        self.assertEqual(sorted(self.units), ["GUI-101", "GUI-102", "GUI-103", "GUI-104", "GUI-105", "GUI-106", "NOTASK:0.10.0#7"])
         self.assertEqual(len(self.units["GUI-105"]["entries"]), 2)
 
     def test_technical_entry_with_i18n_is_dropped(self):
@@ -103,7 +103,7 @@ class FixtureUnitsTest(unittest.TestCase):
         u = self.units["GUI-101"]
         self.assertTrue(any(f["category"] == "i18n" for f in u["files"]))
         self.assertFalse(any(f["relevant"] for f in u["files"]))
-        self.assertEqual(u["i18n"], {"added": [], "removed": [], "changed": []})
+        self.assertEqual(u["i18n"], {"added": [], "removed": [], "changed": [], "other_product": []})
         self.assertEqual(self.decision("GUI-101")[1:], ("Г4", "Д3", "skip"))
         self.assertEqual(u["doc_candidates"], [])
 
@@ -133,7 +133,7 @@ class FixtureUnitsTest(unittest.TestCase):
         self.assertEqual(self.decision("GUI-106"), ("В3", "Г2", "Д3", "doc_and_rn"))
 
     def test_no_task_entry_is_separate_unit(self):
-        u = self.units["NOTASK:1.2.0#7"]
+        u = self.units["NOTASK:0.10.0#7"]
         self.assertIsNone(u["task"])
         self.assertEqual(u["decision"]["visibility"]["value"], "not_visible")
 

@@ -1,19 +1,15 @@
-"""CLI пайплайна.
+"""Шаги пайплайна. Запуск - через pipeline/cli.py:
 
-    python3 -m pipeline.run --config config/release-2.3.0.json            # collect, classify, docs-index, workspace
-    python3 -m pipeline.run --config config/release-2.3.0.json --steps collect,classify
-    python3 -m pipeline.run --config config/release-2.3.0.json --steps etalon   # дифф эталона (только для шага 7)
-    python3 -m pipeline.run --config config/release-2.3.0.json --steps compare  # сравнение результата с эталоном
+    python3 -m pipeline collect 2.3.0     # сбор, отбор по правилам, черновик
+    python3 -m pipeline agent 2.3.0       # агент: решения с низкой достоверностью и текст (после проверки человеком)
+    python3 -m pipeline compare 2.3.0     # сравнение с документацией техписа
 
-Все результаты пишутся в runs/<release>/.
+Все результаты пишутся в output/<набор>/.
 """
 
 from __future__ import annotations
 
-import argparse
 import re
-import time
-from pathlib import Path
 from typing import Any, Dict, List
 
 from . import changelog as CL
@@ -21,42 +17,39 @@ from . import docs as DOCS
 from . import i18n_extract as I18N
 from . import import_graph as IG
 from . import jira as JIRA
+from . import product as P
 from . import tree_diff as TD
 from . import units as U
-from .common import Config, load_json, log, read_text, save_json, save_text
+from .common import load_json, log, read_text, save_json, save_text
+from .layout import Dataset
 from .report import build_report
 
-DEFAULT_STEPS = ["collect", "classify", "docs-index", "workspace"]
+
+def component_versions(ds: Dataset) -> List[Dict[str, str]]:
+    v = ds.versions
+    return [{"variable": P.UI_VERSION_VARIABLE, "component": P.UI_COMPONENT, "old": v["ui_old"], "new": v["ui_new"]}]
 
 
-def _rel(cfg: Config, p) -> str:
-    """Путь относительно каталога doc-automation: результаты не зависят от того, где лежит проект."""
-    try:
-        return Path(p).resolve().relative_to(cfg.base.resolve()).as_posix()
-    except ValueError:
-        return str(p)
-
-
-def step_collect(cfg: Config) -> None:
-    run = cfg.run_dir
-    old, new = cfg.path_of("lerna_old"), cfg.path_of("lerna_new")
-    lower, upper = cfg.get("ui_version_lower"), cfg.get("ui_version_upper")
+def step_collect(ds: Dataset) -> None:
+    data = ds.data_dir
+    old, new = ds.slot(P.SLOT_CODE_OLD), ds.slot(P.SLOT_CODE_NEW)
+    lower, upper = ds.versions["ui_old"], ds.versions["ui_new"]
 
     log("1/5 ченджлог")
-    cl = CL.collect(new / cfg.get("changelog", "apps/point/CHANGELOG.md"), lower, upper)
-    cl["source"] = _rel(cfg, cl["source"])
-    save_json(run / "01_changelog.json", cl)
+    cl = CL.collect(new / P.APP_CHANGELOG, lower, upper)
+    cl["source"] = ds.rel(cl["source"])
+    save_json(data / "01_changelog.json", cl)
 
     log("2/5 дифф кода")
-    code = TD.diff_trees(old, new, cfg.rules, run / "code" / "patches")
-    code["old_root"], code["new_root"] = _rel(cfg, old), _rel(cfg, new)
-    save_json(run / "02_code_diff.json", code)
+    code = TD.diff_trees(old, new, ds.rules, data / "code" / "patches")
+    code["old_root"], code["new_root"] = ds.rel(old), ds.rel(new)
+    save_json(data / "02_code_diff.json", code)
 
     log("3/5 граф импортов (старая и новая версия)")
-    entry = cfg.rules["attribution"]["entry_dirs"]
+    entry = ds.rules["attribution"]["entry_dirs"]
     r_old = IG.reachable_from(old, entry)
     r_new = IG.reachable_from(new, entry)
-    save_json(run / "02_reachability.json", {
+    save_json(data / "02_reachability.json", {
         "entry_dirs": entry,
         "old_count": len(r_old["files"]), "new_count": len(r_new["files"]),
         "unresolved_old": r_old["unresolved_internal"], "unresolved_new": r_new["unresolved_internal"],
@@ -64,38 +57,45 @@ def step_collect(cfg: Config) -> None:
     })
 
     log("4/5 строки интерфейса")
-    rows_old = I18N.extract_tree(old, cfg.rules)
-    rows_new = I18N.extract_tree(new, cfg.rules)
-    locs = cfg.rules["i18n"]["diff_locales"]
+    rows_old = I18N.extract_tree(old, ds.rules)
+    rows_new = I18N.extract_tree(new, ds.rules)
+    locs = ds.rules["i18n"]["diff_locales"]
     full = I18N.diff_strings(rows_old, rows_new, locs)
-    tr = cfg.rules["i18n"]["app_translations_dir"]
+    tr = ds.rules["i18n"]["app_translations_dir"]
     full["app_locale_dirs"] = {"old": I18N.locale_dirs(old, tr), "new": I18N.locale_dirs(new, tr)}
-    save_json(run / "03_i18n_rows.json", {"old": rows_old, "new": rows_new})
-    save_json(run / "03_i18n_diff.json", full)
+    # где используются новые и измененные тексты (изменение 7: тексты только для другого продукта)
+    new_values = {loc: {x["value"] for x in full["locales"][loc]["added"]} for loc in locs}
+    changed_keys = {(c["locale"], c["file"], c["key"]) for c in full["changed_same_key"]}
+    wanted = [r for r in rows_new if r["locale"] in locs and
+              (r["value"] in new_values[r["locale"]] or (r["locale"], r["file"], r["key"]) in changed_keys)]
+    save_json(data / "03_i18n_usage.json", I18N.key_usage(new, wanted, ds.rules))
+    save_json(data / "03_i18n_rows.json", {"old": rows_old, "new": rows_new})
+    save_json(data / "03_i18n_diff.json", full)
 
     log("5/5 Jira")
-    issues = JIRA.load_dir(cfg.path_of("jira"))
-    save_json(run / "04_jira.json", issues)
+    issues = JIRA.load_files(ds.jira_files())
+    save_json(data / "04_jira.json", issues)
 
 
-def step_classify(cfg: Config) -> None:
-    run = cfg.run_dir
-    cl = load_json(run / "01_changelog.json")
-    code = load_json(run / "02_code_diff.json")
-    reach_doc = load_json(run / "02_reachability.json")
-    rows = load_json(run / "03_i18n_rows.json")
-    i18n_full = load_json(run / "03_i18n_diff.json")
-    jira = load_json(run / "04_jira.json")
-    locs = cfg.rules["i18n"]["diff_locales"]
+def step_classify(ds: Dataset) -> None:
+    data = ds.data_dir
+    cl = load_json(data / "01_changelog.json")
+    code = load_json(data / "02_code_diff.json")
+    reach_doc = load_json(data / "02_reachability.json")
+    rows = load_json(data / "03_i18n_rows.json")
+    i18n_full = load_json(data / "03_i18n_diff.json")
+    jira = load_json(data / "04_jira.json")
+    locs = ds.rules["i18n"]["diff_locales"]
     dirs = i18n_full.get("app_locale_dirs", {})
     locale_added = sorted(set(dirs.get("new", [])) - set(dirs.get("old", [])))
 
     units = U.build_units(cl, code, set(reach_doc["files"]), rows["old"], rows["new"],
-                          lambda a, b: I18N.diff_strings(a, b, locs), locale_added, jira, cfg.rules, cfg.doc_map)
+                          lambda a, b: I18N.diff_strings(a, b, locs), locale_added, jira, ds.rules, ds.doc_map,
+                          i18n_usage=load_json(data / "03_i18n_usage.json"))
 
     # Е3: где в базовой доке встречаются старые тексты интерфейса
-    base = cfg.path_of("docs_base")
-    lang_of = cfg.rules["i18n"]["doc_lang_of_locale"]
+    base = ds.slot(P.SLOT_DOCS_OLD)
+    lang_of = ds.rules["i18n"]["doc_lang_of_locale"]
     for u in units:
         if u["decision"]["action"]["value"] == "skip":
             continue
@@ -113,9 +113,9 @@ def step_classify(cfg: Config) -> None:
 
     # Д10: версии компонентов
     admin = []
-    for cv in cfg.get("component_versions", []):
+    for cv in component_versions(ds):
         hits: Dict[str, List[Dict[str, Any]]] = {}
-        for lang in cfg.langs:
+        for lang in ds.langs:
             root = DOCS.docs_root(base, lang)
             rx = re.compile(re.escape(cv["variable"]) + r"\s*=\s*([\w.\-]+)")
             for p in sorted(root.rglob("*.md")):
@@ -129,57 +129,58 @@ def step_classify(cfg: Config) -> None:
         admin.append({**cv, "doc_mentions": hits})
 
     unattr = U.unattributed_files(units, code)
-    save_json(run / "05_units.json", {"release": cfg.release, "units": units, "component_versions": admin,
-                                     "unattributed_files": unattr})
-    report = build_report(cfg, cl, code,
+    save_json(data / "05_units.json", {"release": ds.release, "units": units, "component_versions": admin,
+                                      "unattributed_files": unattr})
+    report = build_report(ds, cl, code,
                           {"count": len(reach_doc["files"]), "unresolved": len(reach_doc["unresolved_new"])},
                           i18n_full, jira, units, unattr, admin)
-    save_text(run / "report.md", report)
-    log(f"единиц: {len(units)}; отчёт: {run / 'report.md'}")
+    save_text(ds.run_dir / "report.md", report)
+    log(f"задач: {len(units)}; подробный отчет: {ds.run_dir / 'report.md'}")
 
 
-def step_docs_index(cfg: Config) -> None:
-    idx = DOCS.index_docs(cfg.path_of("docs_base"), cfg.langs)
+def step_docs_index(ds: Dataset) -> None:
+    idx = DOCS.index_docs(ds.slot(P.SLOT_DOCS_OLD), ds.langs)
     for d in idx.values():
-        d["root"] = _rel(cfg, d["root"])
-    save_json(cfg.run_dir / "06_docs_index.json", idx)
-    log("индекс базовой доки готов")
+        d["root"] = ds.rel(d["root"])
+    save_json(ds.data_dir / "06_docs_index.json", idx)
+    log("оглавление документации готово")
 
 
-def step_workspace(cfg: Config, force: bool) -> None:
-    out = cfg.run_dir / "output"
-    made = DOCS.prepare_workspace(cfg.path_of("docs_base"), out, cfg.langs, force=force)
+def step_workspace(ds: Dataset, force: bool) -> None:
+    out = ds.result_dir
+    made = DOCS.prepare_workspace(ds.slot(P.SLOT_DOCS_OLD), out, ds.langs, force=force)
     for m in made:
-        log(f"рабочая папка: {m}")
+        log(f"рабочая копия документации: {m}")
     tpl = out / "screenshots.md"
-    if not tpl.exists():
+    if force or not tpl.exists():
         save_text(tpl, "# Скриншоты к снятию\n\n| Файл доки | Картинка | Действие | Что снять | Задача | Языки |\n| --- | --- | --- | --- | --- | --- |\n")
     rep = out / "trace.md"
-    if not rep.exists():
+    if force or not rep.exists():
         save_text(rep, "# Трассировка: задача → правка\n\n| Задача | Язык | Файл | Что изменено | Правила |\n| --- | --- | --- | --- | --- |\n")
 
 
-def step_etalon(cfg: Config) -> None:
-    d = DOCS.diff_docs(cfg.path_of("docs_base"), cfg.path_of("docs_etalon"), cfg.langs,
-                       f"docs {cfg.get('docs_base_version')}", f"docs {cfg.release}")
-    DOCS.write_diff(d, cfg.run_dir / "_etalon", "etalon_diff", f"Эталон: что техпис изменил в доке {cfg.release}")
-    log(f"дифф эталона: {cfg.run_dir / '_etalon'}")
+def step_reference(ds: Dataset) -> None:
+    v = ds.versions
+    d = DOCS.diff_docs(ds.slot(P.SLOT_DOCS_OLD), ds.slot(P.SLOT_DOCS_REFERENCE), ds.langs,
+                       f"docs {v['docs_base_version']}", f"docs {ds.release}")
+    DOCS.write_diff(d, ds.run_dir / P.OUT_REFERENCE, "reference_diff", f"Что техпис изменил в документации {ds.release}")
+    log(f"изменения техписа: {ds.run_dir / P.OUT_REFERENCE}")
 
 
-def step_compare(cfg: Config) -> None:
-    run, base, eta = cfg.run_dir, cfg.path_of("docs_base"), cfg.path_of("docs_etalon")
-    ws = run / "output"
-    gen = DOCS.diff_docs(base, ws, cfg.langs, "base", "generated", new_root_fn=DOCS.workspace_root)
-    etd = DOCS.diff_docs(base, eta, cfg.langs, "base", "etalon")
-    vs = DOCS.diff_docs(eta, ws, cfg.langs, "etalon", "generated", new_root_fn=DOCS.workspace_root)
-    ignore = {(i["lang"], i["path"]) for i in cfg.get("etalon_ignore", [])}
-    out_dir = run / "compare"
+def step_compare(ds: Dataset) -> None:
+    run, base, eta = ds.run_dir, ds.slot(P.SLOT_DOCS_OLD), ds.slot(P.SLOT_DOCS_REFERENCE)
+    ws = ds.result_dir
+    gen = DOCS.diff_docs(base, ws, ds.langs, "base", "generated", new_root_fn=DOCS.workspace_root)
+    etd = DOCS.diff_docs(base, eta, ds.langs, "base", "reference")
+    vs = DOCS.diff_docs(eta, ws, ds.langs, "reference", "generated", new_root_fn=DOCS.workspace_root)
+    ignore = {(i["lang"], i["path"]) for i in ds.versions["reference_ignore"]}
+    out_dir = run / P.OUT_COMPARE
     DOCS.write_diff(gen, out_dir, "generated_vs_base", "Что изменил пайплайн")
-    DOCS.write_diff(vs, out_dir, "generated_vs_etalon", "Чем результат отличается от эталона")
+    DOCS.write_diff(vs, out_dir, "generated_vs_reference", "Чем результат отличается от документации техписа")
 
-    L = [f"# Сравнение с эталоном {cfg.release}\n"]
+    L = [f"# Сравнение с документацией техписа {ds.release}\n"]
     summary: Dict[str, Any] = {}
-    for lang in cfg.langs:
+    for lang in ds.langs:
         g = {f["path"] for f in gen["langs"][lang]["files"]}
         e = {f["path"] for f in etd["langs"][lang]["files"] if (lang, f["path"]) not in ignore}
         both, only_g, only_e = sorted(g & e), sorted(g - e), sorted(e - g)
@@ -188,48 +189,15 @@ def step_compare(cfg: Config) -> None:
             for i, line in enumerate((read_text(p) or "").splitlines(), 1):
                 if "SCREENSHOT-TODO" in line:
                     todo.append(f"{p.relative_to(DOCS.workspace_root(ws, lang))}:{i}")
-        summary[lang] = {"both": both, "only_generated": only_g, "only_etalon": only_e, "screenshot_todo": todo,
-                         "etalon_images_changed": [i["path"] for i in etd["langs"][lang]["images"]]}
+        summary[lang] = {"both": both, "only_generated": only_g, "only_reference": only_e, "screenshot_todo": todo,
+                         "reference_images_changed": [i["path"] for i in etd["langs"][lang]["images"]]}
         L.append(f"## {lang}\n")
-        L.append(f"- Файлы, изменённые и пайплайном, и техписом: {len(both)} — " + ", ".join(f"`{p}`" for p in both))
-        L.append(f"- Только пайплайн: {len(only_g)} — " + ", ".join(f"`{p}`" for p in only_g))
-        L.append(f"- Только техпис (без учёта etalon_ignore): {len(only_e)} — " + ", ".join(f"`{p}`" for p in only_e))
-        L.append(f"- Меток SCREENSHOT-TODO: {len(todo)}; картинок, заменённых техписом: {len(summary[lang]['etalon_images_changed'])}")
+        L.append(f"- Файлы, измененные и пайплайном, и техписом: {len(both)}: " + ", ".join(f"`{p}`" for p in both))
+        L.append(f"- Только пайплайн: {len(only_g)}: " + ", ".join(f"`{p}`" for p in only_g))
+        L.append(f"- Только техпис (без учета списка исключений): {len(only_e)}: " + ", ".join(f"`{p}`" for p in only_e))
+        L.append(f"- Меток SCREENSHOT-TODO: {len(todo)}; картинок, замененных техписом: {len(summary[lang]['reference_images_changed'])}")
         L.append("")
-    L.append("Построчные различия: `generated_vs_etalon.html`. Оценку качества текста ставят техпис и ПМ.\n")
+    L.append("Построчные различия: `generated_vs_reference.html`. Оценку качества текста ставят техпис и ПМ.\n")
     save_json(out_dir / "compare.json", summary)
     save_text(out_dir / "compare.md", "\n".join(L))
     log(f"сравнение: {out_dir / 'compare.md'}")
-
-
-def main(argv=None) -> None:
-    ap = argparse.ArgumentParser(description="Пайплайн автоматизации документации LUNA POINT 2")
-    ap.add_argument("--config", required=True, type=Path)
-    ap.add_argument("--steps", default=",".join(DEFAULT_STEPS),
-                    help="через запятую: collect, classify, docs-index, workspace, etalon, compare")
-    ap.add_argument("--force", action="store_true", help="пересоздать рабочую папку output/")
-    args = ap.parse_args(argv)
-    cfg = Config(args.config)
-    cfg.run_dir.mkdir(parents=True, exist_ok=True)
-    steps = [s.strip() for s in args.steps.split(",") if s.strip()]
-    t0 = time.time()
-    for s in steps:
-        if s == "collect":
-            step_collect(cfg)
-        elif s == "classify":
-            step_classify(cfg)
-        elif s == "docs-index":
-            step_docs_index(cfg)
-        elif s == "workspace":
-            step_workspace(cfg, args.force)
-        elif s == "etalon":
-            step_etalon(cfg)
-        elif s == "compare":
-            step_compare(cfg)
-        else:
-            raise SystemExit(f"неизвестный шаг: {s}")
-    log(f"готово за {time.time() - t0:.1f} с → {cfg.run_dir}")
-
-
-if __name__ == "__main__":
-    main()
