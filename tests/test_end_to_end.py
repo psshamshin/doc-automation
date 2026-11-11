@@ -93,7 +93,10 @@ class CollectTest(unittest.TestCase):
         self.assertIn("## Черновик release notes: требует просмотра", d)
         self.assertIn('| GUI-105 | Изменения | Раздел "Заказы" | Добавлен фильтр заказов по дате | список изменений |', d)
         self.assertNotIn("Коды в скобках", d)
-        self.assertEqual(self.text("jira_query.txt").strip(), "key in (GUI-101, GUI-102, GUI-103, GUI-104, GUI-105, GUI-106)")
+        q = self.text("jira_query.txt")
+        self.assertIn("\nkey in (GUI-101, GUI-102, GUI-103, GUI-104, GUI-105, GUI-106)\n", q)
+        self.assertIn('project in (GUI) AND resolved >= "2026-01-10" AND resolved <= "2026-03-01 23:59" AND statusCategory = Done '
+                      "AND key not in (GUI-101,", q)
 
     def test_no_absolute_paths_and_no_time(self):
         for n in DATA_FILES + ["../report.md", "../" + V.FILE_NAME]:

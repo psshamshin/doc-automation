@@ -28,6 +28,54 @@ class ReleaseNoteSourceTest(unittest.TestCase):
         self.assertEqual(line, "- **[Общее]**: Фильтр заказов по дате создания <!-- GUI-105, источник: Jira -->")
 
 
+class JiraExportTest(unittest.TestCase):
+    """Выгрузка Jira в формате 'Экспорт -> XML': метка продукта, строка release notes, задачи вне списка изменений."""
+
+    XML = """<rss version="0.92"><channel>
+<item><title>[GUI-103] [point] Заголовок страницы сбрасывается</title><key id="1">GUI-103</key>
+  <summary>[point] Заголовок страницы сбрасывается при прокрутке</summary>
+  <description>&lt;p&gt;Описание&lt;/p&gt;</description><type>Bug</type><status>Done</status><labels></labels></item>
+<item><title>[GUI-105] [point3] Фильтр</title><key id="2">GUI-105</key><summary>[point3] Фильтр по дате</summary></item>
+<item><title>[GUI-900] Без метки</title><key id="3">GUI-900</key><summary>Задача, которой нет в списке изменений</summary></item>
+</channel></rss>"""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.data = self.tmp / "data"
+        shutil.copytree(DEMO, self.data)
+        (self.data / "SearchRequest.xml").write_text(self.XML, encoding="utf-8")
+        self.out = self.tmp / "out"
+        CLI.main(["collect", str(self.data), "--out", str(self.out)])
+        self.units = {u["id"]: u for u in json.loads((self.out / P.OUT_DATA / "05_units.json").read_text(encoding="utf-8"))["units"]}
+        self.review = (self.out / V.FILE_NAME).read_text(encoding="utf-8")
+
+    def test_product_by_title_prefix(self):
+        self.assertEqual(self.units["GUI-103"]["decision"]["product"]["rule"], "В1")
+        self.assertEqual(self.units["GUI-105"]["decision"]["product"]["rule"], "В2")   # метка другого продукта
+        self.assertEqual(self.units["GUI-105"]["decision"]["action"]["value"], "skip")
+        self.assertEqual(self.units["GUI-106"]["decision"]["product"]["rule"], "В3")   # задачи нет в выгрузке
+
+    def test_release_note_line_from_title(self):
+        self.assertIn("| GUI-103 | Исправленные ошибки | Работа с системой | Заголовок страницы сбрасывается при прокрутке | Jira |", self.review)
+
+    def test_tasks_missing_from_changelog_are_listed(self):
+        self.assertIn("## Задачи Jira, которых нет в списке изменений", self.review)
+        self.assertIn("| GUI-900 | Задача, которой нет в списке изменений | - |", self.review)
+        self.assertIn("| Задач Jira в выгрузке | 3 |", self.review)
+
+
+class JiraQueryTest(unittest.TestCase):
+    def test_no_control_query_without_dates(self):
+        units = [{"task": "GUI-2"}, {"task": "ABC-1"}, {"task": None}]
+        q = DRAFT.jira_queries(units, {"lower_date": None, "upper_date": "2026-03-01"})
+        self.assertEqual(q, {"exact": "key in (ABC-1, GUI-2)", "control": ""})
+
+    def test_projects_and_window(self):
+        q = DRAFT.jira_queries([{"task": "GUI-2"}, {"task": "ABC-1"}], {"lower_date": "2026-01-10", "upper_date": "2026-03-01"})
+        self.assertTrue(q["control"].startswith('project in (ABC, GUI) AND resolved >= "2026-01-10" AND resolved <= "2026-03-01 23:59"'))
+
+
 class RenameTest(unittest.TestCase):
     """Набор данных, в котором подпись 'Статус' переименована в 'Состояние заказа' и это названо в записи."""
 

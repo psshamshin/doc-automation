@@ -82,7 +82,7 @@ def summary_of(unit: Dict[str, Any]) -> str:
 def render(ds, units: List[Dict[str, Any]], conf: Dict[str, Dict[str, Any]], code_edits: List[Dict[str, Any]],
            rn_files: List[Dict[str, Any]], jira_count: int, marks: Optional[Dict[str, str]] = None,
            reviewed: bool = False, rn_lines: Optional[List[Dict[str, Any]]] = None,
-           renames: Optional[List[Dict[str, Any]]] = None) -> str:
+           renames: Optional[List[Dict[str, Any]]] = None, jira_extra: Optional[List[Dict[str, Any]]] = None) -> str:
     marks = marks or {}
     v = ds.versions
     try:
@@ -106,11 +106,11 @@ def render(ds, units: List[Dict[str, Any]], conf: Dict[str, Dict[str, Any]], cod
          f"| Дата релиза | {v['release_date'] or 'неизвестна'} | база знаний или release notes техписа |",
          f"| Документация предыдущего релиза | {v['docs_base_version'] or 'не определена'} | последний файл release notes |",
          f"| Интерфейс | {v['ui_old']} -> {v['ui_new']} | `{P.APP_PACKAGE_JSON}` в папках с кодом |",
-         f"| Задач Jira в выгрузке | {jira_count} | `{P.SLOT_JIRA}/` |", ""]
+         f"| Задач Jira в выгрузке | {jira_count} | файлы выгрузки в наборе данных |", ""]
     for n in v["notes"]:
         L.append(f"- **Внимание:** {n}")
     if jira_count == 0:
-        L.append("- **Внимание:** выгрузки Jira нет, продукт определяется только по коду. Запрос для выгрузки: `jira_query.txt`.")
+        L.append("- **Внимание:** выгрузки Jira нет, продукт определяется только по коду. Готовые запросы для выгрузки: `jira_query.txt`.")
     L += ["", "## Что уже сделал код", ""]
     for b in code_edits:
         warn = (f" **В этом языке стояло {b['old']}, а не {b['expected_old']}: в прошлом релизе версию не обновили.**"
@@ -163,6 +163,15 @@ def render(ds, units: List[Dict[str, Any]], conf: Dict[str, Dict[str, Any]], cod
             L.append(f"| {r['unit']} | {r['lang']} | `{r['file']}`:{r['line']} | «{_cell(r['old'])}» | «{_cell(r['new'])}» |")
     else:
         L.append("Таких замен в этом релизе не найдено.")
+    if jira_extra:
+        L += ["", "## Задачи Jira, которых нет в списке изменений", "",
+              "Эти задачи есть в выгрузке Jira, но разработчики не записали их в список изменений. Решений по ним "
+              "нет: пайплайну не к чему привязать код. Проверьте по ссылке, не изменился ли интерфейс POINT 2.", "",
+              "| Задача | Название | Метки продукта |", "| --- | --- | --- |"]
+        for x in jira_extra:
+            url = task_url(template, x["key"])
+            name = f"[{x['key']}]({url})" if url else x["key"]
+            L.append(f"| {name} | {_cell(x['summary'])[:160]} | {', '.join(x['tags']) or '-'} |")
     L += ["", "Все записи, файлы и тексты по каждой задаче: `report.md`.", ""]
     return "\n".join(L).replace("—", "-")
 
@@ -204,19 +213,19 @@ def proposals(units: List[Dict[str, Any]], conf: Dict[str, Dict[str, Any]]) -> D
 
 
 def write(path: Path, ds, units, conf, code_edits, rn_files, jira_count: int, force: bool = False,
-          rn_lines=None, renames=None) -> str:
+          rn_lines=None, renames=None, jira_extra=None) -> str:
     """Не затирает отметки человека. Возвращает, что сделано: created | kept | updated."""
     old = read_text(path)
     if old is None or force:
-        save_text(path, render(ds, units, conf, code_edits, rn_files, jira_count, rn_lines=rn_lines, renames=renames))
+        save_text(path, render(ds, units, conf, code_edits, rn_files, jira_count, rn_lines=rn_lines, renames=renames, jira_extra=jira_extra))
         return "created"
     prev = parse(old)
     same = all(prev["auto"].get(u["id"]) == rule_text(u) for u in units) and set(prev["marks"]) == {u["id"] for u in units}
     if same and not prev["errors"]:
-        save_text(path, render(ds, units, conf, code_edits, rn_files, jira_count, marks=prev["marks"], reviewed=prev["reviewed"], rn_lines=rn_lines, renames=renames))
+        save_text(path, render(ds, units, conf, code_edits, rn_files, jira_count, marks=prev["marks"], reviewed=prev["reviewed"], rn_lines=rn_lines, renames=renames, jira_extra=jira_extra))
         return "kept"
     # правила дали другой результат: отметки сохраняются там, где решение правил не изменилось
     keep = {u["id"]: prev["marks"][u["id"]] for u in units
             if u["id"] in prev["marks"] and prev["auto"].get(u["id"]) == rule_text(u)}
-    save_text(path, render(ds, units, conf, code_edits, rn_files, jira_count, marks=keep, reviewed=False, rn_lines=rn_lines, renames=renames))
+    save_text(path, render(ds, units, conf, code_edits, rn_files, jira_count, marks=keep, reviewed=False, rn_lines=rn_lines, renames=renames, jira_extra=jira_extra))
     return "updated"

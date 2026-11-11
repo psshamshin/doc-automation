@@ -56,7 +56,6 @@ KNOWLEDGE_DIR = "knowledge"
 RULES_FILE = "knowledge/rules.json"
 DOC_MAP_FILE = "knowledge/doc_map.json"
 RELEASES_FILE = "knowledge/releases.json"
-COMPARE_EXCEPTIONS_FILE = "knowledge/compare_exceptions.json"
 LINKS_FILE = "knowledge/links.json"          # адреса внешних систем
 
 # ---- папки проекта
