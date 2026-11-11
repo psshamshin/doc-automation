@@ -13,6 +13,7 @@ import re
 from typing import Any, Dict, List
 
 from . import changelog as CL
+from . import compare_view as CV
 from . import docs as DOCS
 from . import i18n_extract as I18N
 from . import import_graph as IG
@@ -196,7 +197,10 @@ def step_compare(ds: Dataset) -> None:
         L.append(f"- Только техпис: {len(only_e)}: " + ", ".join(f"`{p}`" for p in only_e))
         L.append(f"- Меток SCREENSHOT-TODO: {len(todo)}; картинок, замененных техписом: {len(summary[lang]['reference_images_changed'])}")
         L.append("")
-    L.append("Построчные различия: `generated_vs_reference.html`. Оценку качества текста ставят техпис и ПМ.\n")
+    data = CV.build_data(base, ws, eta, ds.langs)
+    save_text(out_dir / "compare.html", CV.render_page(data, f"Сравнение: релиз {ds.release}"))
+    L.append("Страница сравнения в три колонки (было, пайплайн, техпис): `compare.html`. "
+             "Оценку качества текста ставят техпис и ПМ.\n")
     save_json(out_dir / "compare.json", summary)
     save_text(out_dir / "compare.md", "\n".join(L))
-    log(f"сравнение: {out_dir / 'compare.md'}")
+    log(f"сравнение: {out_dir / 'compare.html'}")
