@@ -242,6 +242,41 @@ def write_release_notes(ds, units: List[Dict[str, Any]], decisions: Dict[str, st
 
 # ---------------------------------------------------------------- запрос для Jira
 
-def jira_query(units: List[Dict[str, Any]]) -> str:
+def jira_queries(units: List[Dict[str, Any]], changelog: Dict[str, Any]) -> Dict[str, str]:
+    """Два запроса для Jira.
+
+    exact - задачи, которые названы в списке изменений: по ним пайплайн принимает решения.
+    control - задачи тех же проектов, закрытые в окне дат релиза, которых в списке изменений нет:
+    так видно, что разработчики могли не записать.
+    """
     keys = sorted({u["task"] for u in units if u.get("task")})
-    return "key in (" + ", ".join(keys) + ")" if keys else ""
+    if not keys:
+        return {"exact": "", "control": ""}
+    exact = "key in (" + ", ".join(keys) + ")"
+    projects = sorted({k.split("-")[0] for k in keys})
+    lo, hi = changelog.get("lower_date"), changelog.get("upper_date")
+    control = ""
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", lo or "") and re.fullmatch(r"\d{4}-\d{2}-\d{2}", hi or ""):
+        control = (f"project in ({', '.join(projects)}) AND resolved >= \"{lo}\" AND resolved <= \"{hi} 23:59\" "
+                   f"AND statusCategory = Done AND key not in ({', '.join(keys)})")
+    return {"exact": exact, "control": control}
+
+
+def jira_query_file(q: Dict[str, str], changelog: Dict[str, Any]) -> str:
+    L = ["Запросы для Jira (Фильтры -> Расширенный поиск). Пайплайн составил их по списку изменений фронтенда.", "",
+         "1. Основной: задачи, названные в списке изменений. Выгрузите результат (Экспорт -> XML) и положите файл в input/.", "",
+         q["exact"], ""]
+    if q["control"]:
+        L += [f"2. Контрольный: задачи, закрытые с {changelog['lower_date']} по {changelog['upper_date']}, которых нет в списке "
+              "изменений. Выгрузите так же и положите рядом: пайплайн покажет их в файле проверки отдельным списком.", "",
+              q["control"], "",
+              "Если результатов слишком много, сузьте запрос до задач с меткой продукта в названии, добавив в конец:",
+              'AND summary ~ "point"', ""]
+    return "\n".join(L)
+
+
+def jira_extra(jira: Dict[str, Dict[str, Any]], units: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Задачи из выгрузки Jira, которых нет в списке изменений."""
+    known = {u["task"] for u in units if u.get("task")}
+    return [{"key": k, "summary": (v.get("summary") or "").strip(), "tags": v.get("product_tags") or []}
+            for k, v in sorted(jira.items()) if k not in known]

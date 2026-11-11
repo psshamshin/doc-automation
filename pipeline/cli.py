@@ -53,14 +53,16 @@ def cmd_collect(ds: Dataset, args) -> None:
     jira = load_json(ds.data_dir / "04_jira.json")
     renames = DRAFT.planned_renames(ds, us)
     status = V.write(ds.run_dir / V.FILE_NAME, ds, us, conf, bumps, rn, len(jira), force=args.force,
-                     rn_lines=DRAFT.rn_preview(us, proposals, index), renames=renames)
+                     rn_lines=DRAFT.rn_preview(us, proposals, index), renames=renames,
+                     jira_extra=DRAFT.jira_extra(jira, us))
     status_text = {"created": "создан, ждет проверки", "kept": "ваши отметки сохранены",
                    "updated": "обновлен: решения правил изменились, отметка «Проверено» снята"}[status]
     save_json(ds.data_dir / "07_review.json", {"versions": ds.versions, "proposals": proposals, "confidence": conf,
                                               "code_edits": bumps, "release_notes": rn, "planned_renames": renames})
-    q = DRAFT.jira_query(us)
-    if q:
-        save_text(ds.run_dir / "jira_query.txt", q + "\n")
+    changelog = load_json(ds.data_dir / "01_changelog.json")
+    q = DRAFT.jira_queries(us, changelog)
+    if q["exact"]:
+        save_text(ds.run_dir / "jira_query.txt", DRAFT.jira_query_file(q, changelog))
     low = sum(1 for c in conf.values() if c["level"] == "low")
     log(f"решений с низкой достоверностью: {low} из {len(us)}")
     log(f"файл проверки: {ds.run_dir / V.FILE_NAME} ({status_text})")

@@ -95,8 +95,14 @@ def collect(path: Path, lower: str, upper: str) -> Dict[str, Any]:
             e = dict(e)
             e["id"] = f"{v['version']}#{i + 1}"
             entries.append(e)
+    lo, hi = semver_key(lower), semver_key(upper)
+    older = [v for v in versions if semver_key(v["version"]) <= lo and v.get("date")]
+    newer = [v for v in versions if semver_key(v["version"]) <= hi and v.get("date")]
     return {
         "source": str(path),
+        # окно дат релиза: от выпуска предыдущей версии интерфейса до выпуска новой (для запроса в Jira)
+        "lower_date": max(older, key=lambda v: semver_key(v["version"]))["date"] if older else None,
+        "upper_date": max(newer, key=lambda v: semver_key(v["version"]))["date"] if newer else None,
         "lower": lower,
         "upper": upper,
         "versions": [{"version": v["version"], "date": v["date"], "count": len(v["entries"])} for v in selected],

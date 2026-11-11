@@ -10,7 +10,7 @@ python3 -m py_compile pipeline/*.py tests/*.py
 python3 -m unittest discover -s tests
 ```
 
-Ожидается: `Ran 107 tests ... OK`. Тест `test_rerun_is_identical` запускает сбор на придуманных данных
+Ожидается: `Ran 112 tests ... OK`. Тест `test_rerun_is_identical` запускает сбор на придуманных данных
 дважды и сравнивает контрольные суммы всех результатов. Тесты `AgentTest` проверяют подготовку заданий,
 запуск и проверку ответов с заглушкой вместо агента.
 
@@ -26,7 +26,7 @@ shasum -a 256 output/demo/report.md output/demo/review.md
 
 ```
 d2b8f289cc42c45024ba64fc3f46915a3eef9a06080ff705b3aa22a81d0fdfaa  output/demo/report.md
-62dbf2f39134fe62a25409e2f35baa4865369721c954cc1ca176f782d7694edf  output/demo/review.md
+34a0fa8379aa739e330fcd0c8a06f681b5d5e897329712fc14ae81067ee68409  output/demo/review.md
 ```
 
 Эти данные лежат в репозитории, поэтому суммы должны совпасть на любой машине. Те же файлы задача Tests
@@ -66,7 +66,7 @@ shasum -a 256 output/2.3.0/report.md output/2.3.0/review.md
 
 ```
 012069b18e0010f65a43609e45efe414d5cf45082cce0aeb5f965188fa64d39c  output/2.3.0/report.md
-6128322d328bad0f3b132a0407061bd3c84de75f368e1153082accceedc5fc65  output/2.3.0/review.md
+142ec06f6d44e48d7c19353b3b54baa710849c1f0cc1687357eb9127d6465289  output/2.3.0/review.md
 ```
 
 Суммы верны для кода и правил из коммита, в котором этот файл менялся последний раз, и для запуска без

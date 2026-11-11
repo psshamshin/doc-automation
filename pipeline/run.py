@@ -173,7 +173,6 @@ def step_compare(ds: Dataset) -> None:
     gen = DOCS.diff_docs(base, ws, ds.langs, "base", "generated", new_root_fn=DOCS.workspace_root)
     etd = DOCS.diff_docs(base, eta, ds.langs, "base", "reference")
     vs = DOCS.diff_docs(eta, ws, ds.langs, "reference", "generated", new_root_fn=DOCS.workspace_root)
-    ignore = {(i["lang"], i["path"]) for i in ds.versions["reference_ignore"]}
     out_dir = run / P.OUT_COMPARE
     DOCS.write_diff(gen, out_dir, "generated_vs_base", "Что изменил пайплайн")
     DOCS.write_diff(vs, out_dir, "generated_vs_reference", "Чем результат отличается от документации техписа")
@@ -182,7 +181,7 @@ def step_compare(ds: Dataset) -> None:
     summary: Dict[str, Any] = {}
     for lang in ds.langs:
         g = {f["path"] for f in gen["langs"][lang]["files"]}
-        e = {f["path"] for f in etd["langs"][lang]["files"] if (lang, f["path"]) not in ignore}
+        e = {f["path"] for f in etd["langs"][lang]["files"]}
         both, only_g, only_e = sorted(g & e), sorted(g - e), sorted(e - g)
         todo = []
         for p in sorted(DOCS.workspace_root(ws, lang).rglob("*.md")):
@@ -194,7 +193,7 @@ def step_compare(ds: Dataset) -> None:
         L.append(f"## {lang}\n")
         L.append(f"- Файлы, измененные и пайплайном, и техписом: {len(both)}: " + ", ".join(f"`{p}`" for p in both))
         L.append(f"- Только пайплайн: {len(only_g)}: " + ", ".join(f"`{p}`" for p in only_g))
-        L.append(f"- Только техпис (без учета списка исключений): {len(only_e)}: " + ", ".join(f"`{p}`" for p in only_e))
+        L.append(f"- Только техпис: {len(only_e)}: " + ", ".join(f"`{p}`" for p in only_e))
         L.append(f"- Меток SCREENSHOT-TODO: {len(todo)}; картинок, замененных техписом: {len(summary[lang]['reference_images_changed'])}")
         L.append("")
     L.append("Построчные различия: `generated_vs_reference.html`. Оценку качества текста ставят техпис и ПМ.\n")

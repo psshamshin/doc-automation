@@ -198,10 +198,6 @@ class Dataset:
         except ValueError:
             return p.as_posix()
 
-    def _compare_exceptions(self, release: str) -> List[Dict[str, str]]:
-        p = self.base / P.COMPARE_EXCEPTIONS_FILE
-        return load_json(p).get(release, []) if p.is_file() else []
-
     # ---- версии
     @property
     def release(self) -> str:
@@ -259,6 +255,5 @@ class Dataset:
             "release_notes_file": R.release_notes_filename(release),
             "previous_release_notes_file": base["file"] if base else None,
             "previous_components": base["components"] if base else {},
-            "reference_ignore": self.overrides.get("reference_ignore", self._compare_exceptions(release)),
             "notes": notes,
         }
