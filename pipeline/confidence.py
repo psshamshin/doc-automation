@@ -30,7 +30,6 @@ def _evidence_keys(u: Dict[str, Any]) -> set:
 
 
 def assess(units: List[Dict[str, Any]], rules: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
-    markers = rules["product"]["other_product_file_markers"]
     # текст считается общим, только если он привязан к другой задаче, решение по которой тоже опирается на тексты
     owners: Dict[tuple, List[str]] = defaultdict(list)
     for u in units:
@@ -44,23 +43,26 @@ def assess(units: List[Dict[str, Any]], rules: Dict[str, Any]) -> Dict[str, Dict
         action = d["action"]["value"]
         flags: List[Dict[str, str]] = []
 
-        def add(code: str, kind: str, text: str) -> None:
-            flags.append({"rule": RULE_OF[code], "code": code, "kind": kind, "text": text})
+        def add(code: str, kind: str, text: str, short: str) -> None:
+            flags.append({"rule": RULE_OF[code], "code": code, "kind": kind, "text": text, "short": short})
 
         if d["product"]["value"] == "needs_review":
-            add("product_unclear", "decision", "правила не определили продукт: " + "; ".join(d["product"]["reasons"]))
+            add("product_unclear", "decision", "правила не определили продукт: " + "; ".join(d["product"]["reasons"]),
+                "продукт не определен")
         if action != "skip" or d["product"]["value"] == "needs_review":
             if d["visibility"]["value"] == "unknown":
                 add("visibility_unclear", "decision",
                     "правила не определили, видит ли изменение пользователь: нет изменений в текстах интерфейса, "
-                    "навигации и правах, в записях нет слов об интерфейсе")
+                    "навигации и правах, в записях нет слов об интерфейсе", "видимость не определена")
         if action != "skip":
             rule = d["visibility"]["rule"]
+            src = [f for f in u["files"] if f.get("relevant") and f["category"] == "source"]
+            used = [f for f in src if f["reachable_from_app"]]
             by_text = rule == "Г5" or (rule == "Г2" and d["visibility"]["reasons"][0].startswith("в тексте"))
-            if by_text:
+            if by_text and not used:
                 add("text_only", "decision",
                     "видимость определена только по словам в записи (" + d["visibility"]["reasons"][0]
-                    + "), в коде подтверждения нет")
+                    + "), измененного кода приложения у значимых записей нет", "только слова в записи, кода нет")
             keys = _evidence_keys(u)
             # текст, который дословно назван в записи задачи, точно принадлежит ей
             said = " ".join(e["text"] for e in u["entries"] if e["_flags"].get("significant")).lower()
@@ -69,21 +71,19 @@ def assess(units: List[Dict[str, Any]], rules: Dict[str, Any]) -> Dict[str, Dict
                 others = sorted({o for k in keys for o in owners[k]} - {u["id"]})
                 add("shared_strings", "decision",
                     "все изменившиеся тексты интерфейса привязаны и к другим задачам (" + ", ".join(others[:6])
-                    + "): возможно, это не изменение этой задачи")
-            src = [f for f in u["files"] if f.get("relevant") and f["category"] == "source"]
-            foreign = [f for f in src if any(m in f["path"] for m in markers) or not f["reachable_from_app"]]
-            if d["product"]["value"] == "point2" and src and len(foreign) * 2 >= len(src):
+                    + "): возможно, это не изменение этой задачи", "тексты интерфейса общие с " + ", ".join(others[:3]))
+            if d["product"]["value"] == "point2" and src and (len(src) - len(used)) * 2 >= len(src):
                 add("other_product_files", "decision",
-                    f"{len(foreign)} из {len(src)} файлов кода значимых записей относятся к другому продукту "
-                    "или не используются приложением")
+                    f"{len(src) - len(used)} из {len(src)} файлов кода значимых записей приложение не использует",
+                    "код не используется приложением")
             if d["class_draft"]["why"].endswith("(по умолчанию)"):
-                add("class_default", "place", "вид изменения не определен, поставлен по умолчанию")
+                add("class_default", "place", "вид изменения не определен, поставлен по умолчанию", "вид изменения по умолчанию")
         if action in DOC_ACTIONS:
             n = len(u["doc_candidates"])
             if n == 0:
-                add("no_page", "place", "страница документации не найдена")
+                add("no_page", "place", "страница документации не найдена", "страница не найдена")
             elif n > MANY_PAGES:
-                add("many_pages", "place", f"слишком много страниц-кандидатов: {n}")
+                add("many_pages", "place", f"слишком много страниц-кандидатов: {n}", f"страниц-кандидатов: {n}")
 
         need_agent = any(f["kind"] == "decision" for f in flags)
         out[u["id"]] = {"level": "low" if need_agent else "high", "flags": flags}

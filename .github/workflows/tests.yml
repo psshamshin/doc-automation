@@ -39,9 +39,8 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: demo-draft
+          name: demo-review
           path: |
-            output/demo/draft.md
+            output/demo/review.md
             output/demo/report.md
-            output/demo/validation.txt
           if-no-files-found: error

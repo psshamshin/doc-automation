@@ -1,6 +1,6 @@
 # Задача 2. Работа агента. Запускается вручную после того, как человек проверил черновик задачи 1.
-# Сейчас только готовит задания агенту (режим dry-run) на придуманных данных: ключ доступа к агенту
-# в репозиторий не добавлен. Что нужно для настоящего запуска, написано в README, раздел "Задачи в CI".
+# Сейчас только готовит задания агенту на придуманных данных: агент пока не выбран.
+# Что нужно для настоящего запуска, написано в README, раздел "Задачи в CI".
 name: 2. Работа агента
 
 on:
@@ -11,7 +11,7 @@ on:
         required: true
         default: 'tests/data/demo'
       approved:
-        description: 'Я проверил черновик задачи 1 и согласен с решениями'
+        description: 'Я проверил решения задачи 1 и согласен с ними'
         type: boolean
         required: true
         default: false
@@ -23,10 +23,10 @@ jobs:
   agent:
     runs-on: ubuntu-latest
     steps:
-      - name: Stop if the draft is not approved
+      - name: Stop if the review is not confirmed
         if: ${{ !inputs.approved }}
         run: |
-          echo "Черновик не одобрен: отметьте галочку при запуске." >> "$GITHUB_STEP_SUMMARY"
+          echo "Решения не проверены: отметьте галочку при запуске." >> "$GITHUB_STEP_SUMMARY"
           exit 1
 
       - uses: actions/checkout@v7

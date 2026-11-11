@@ -63,6 +63,12 @@ def step_collect(ds: Dataset) -> None:
     full = I18N.diff_strings(rows_old, rows_new, locs)
     tr = ds.rules["i18n"]["app_translations_dir"]
     full["app_locale_dirs"] = {"old": I18N.locale_dirs(old, tr), "new": I18N.locale_dirs(new, tr)}
+    # где используются новые и измененные тексты (изменение 7: тексты только для другого продукта)
+    new_values = {loc: {x["value"] for x in full["locales"][loc]["added"]} for loc in locs}
+    changed_keys = {(c["locale"], c["file"], c["key"]) for c in full["changed_same_key"]}
+    wanted = [r for r in rows_new if r["locale"] in locs and
+              (r["value"] in new_values[r["locale"]] or (r["locale"], r["file"], r["key"]) in changed_keys)]
+    save_json(data / "03_i18n_usage.json", I18N.key_usage(new, wanted, ds.rules))
     save_json(data / "03_i18n_rows.json", {"old": rows_old, "new": rows_new})
     save_json(data / "03_i18n_diff.json", full)
 
@@ -84,7 +90,8 @@ def step_classify(ds: Dataset) -> None:
     locale_added = sorted(set(dirs.get("new", [])) - set(dirs.get("old", [])))
 
     units = U.build_units(cl, code, set(reach_doc["files"]), rows["old"], rows["new"],
-                          lambda a, b: I18N.diff_strings(a, b, locs), locale_added, jira, ds.rules, ds.doc_map)
+                          lambda a, b: I18N.diff_strings(a, b, locs), locale_added, jira, ds.rules, ds.doc_map,
+                          i18n_usage=load_json(data / "03_i18n_usage.json"))
 
     # Е3: где в базовой доке встречаются старые тексты интерфейса
     base = ds.slot(P.SLOT_DOCS_OLD)

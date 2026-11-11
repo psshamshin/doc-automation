@@ -103,7 +103,7 @@ class DemoUnitsTest(unittest.TestCase):
         u = self.units["GUI-101"]
         self.assertTrue(any(f["category"] == "i18n" for f in u["files"]))
         self.assertFalse(any(f["relevant"] for f in u["files"]))
-        self.assertEqual(u["i18n"], {"added": [], "removed": [], "changed": []})
+        self.assertEqual(u["i18n"], {"added": [], "removed": [], "changed": [], "other_product": []})
         self.assertEqual(self.decision("GUI-101")[1:], ("Г4", "Д3", "skip"))
         self.assertEqual(u["doc_candidates"], [])
 

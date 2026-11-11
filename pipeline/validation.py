@@ -1,34 +1,49 @@
-"""Файл проверки человеком: output/<набор>/validation.txt.
+"""Файл проверки человеком: output/<набор>/review.md. Один файл: и сводка, и решения.
 
-Код предлагает решение по каждой задаче. Человек правит вторую колонку, где не согласен, и ставит
-'approved: yes'. Только после этого запускается агент.
+В таблице три отметки на задачу: принять решение правил, отклонить его или передать задачу агенту.
+Агент запускается только после отметки 'Проверено: [x]'.
 """
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .common import read_text, save_text
+from . import product as P
+from .common import load_json, read_text, save_text
 
-DECISIONS = {
-    "doc": "править документацию и строка в release notes",
-    "rn": "только строка в release notes (исправление ошибки)",
-    "langs": "строка в release notes и проверить список языков",
-    "screens": "текст не менять, проверить скриншоты",
-    "skip": "не брать в работу",
-    "agent": "решение не подтверждено, проверяет агент",
-}
+FILE_NAME = "review.md"
 OF_ACTION = {"doc_and_rn": "doc", "rn_and_check_doc": "rn", "rn_and_check_langs": "langs",
              "screenshot_check": "screens", "skip": "skip", "review": "agent"}
 ACTION_TEXT = {"doc_and_rn": "в доку + RN", "rn_and_check_doc": "RN + проверить доку",
                "rn_and_check_langs": "RN + проверить список языков", "screenshot_check": "проверить скрины",
                "skip": "отброшено", "review": "не определено"}
-FILE_NAME = "validation.txt"
+DECISION_TEXT = {"doc": "править документацию и строка в release notes", "rn": "строка в release notes",
+                 "langs": "строка в release notes и сверка списка языков", "screens": "проверить скриншоты",
+                 "skip": "не брать в работу", "agent": "проверяет агент"}
+MARKS = ("accept", "reject", "agent")
+ON_RE = re.compile(r"\[\s*[xXхХ✓vV+]\s*\]")
+BOX_RE = re.compile(r"\[\s*[xXхХ✓vV+ ]?\s*\]")
+ID_RE = re.compile(r"((?:[A-Z][A-Z0-9]+-\d+)|NOTASK:[^\s\]|)]+)")
+SUMMARY_LEN = 110
 
 
-def proposal(unit: Dict[str, Any], conf: Dict[str, Any]) -> str:
-    return "agent" if conf["level"] == "low" else OF_ACTION[unit["decision"]["action"]["value"]]
+def jira_template(ds) -> str:
+    """Шаблон адреса задачи: dataset.json набора данных, иначе knowledge/links.json, поверх него локальный
+    knowledge/local.json (в git не попадает). Пустая строка - ссылок нет."""
+    if "jira_task_url" in ds.overrides:
+        return ds.overrides["jira_task_url"] or ""
+    links: Dict[str, Any] = {}
+    for name in (P.LINKS_FILE, P.LOCAL_LINKS_FILE):
+        p = Path(ds.base) / name
+        if p.is_file():
+            links.update({k: v for k, v in load_json(p).items() if v})
+    return links.get("jira_task_url") or ""
+
+
+def task_url(template: str, unit_id: Optional[str]) -> Optional[str]:
+    return template.replace("{key}", unit_id) if template and unit_id else None
 
 
 def rule_text(unit: Dict[str, Any]) -> str:
@@ -37,68 +52,145 @@ def rule_text(unit: Dict[str, Any]) -> str:
             f"{d['class_draft']['value']})").replace("—", "-")
 
 
-def render(dataset: str, release: str, units: List[Dict[str, Any]], conf: Dict[str, Dict[str, Any]],
-           keep: Optional[Dict[str, str]] = None, approved: bool = False) -> str:
-    keep = keep or {}
-    L = [
-        f"# Проверка решений перед запуском агента. Набор данных: {dataset}, релиз {release}.",
-        "#",
-        "# Как пользоваться:",
-        "# 1. Откройте draft.md рядом с этим файлом и посмотрите, что собрал код.",
-        "# 2. Если не согласны с решением по задаче, поменяйте слово во второй колонке.",
-        "# 3. Когда все проверено, замените ниже 'approved: no' на 'approved: yes'.",
-        "# 4. Запустите агента: python3 -m pipeline agent " + dataset,
-        "#",
-        "# Допустимые решения:",
-    ]
-    L += [f"#   {k:<7} - {v}" for k, v in DECISIONS.items()]
-    L += ["#", "# Агент работает только с задачами doc, langs, agent и с задачами rn, у которых в документации",
-          "# нашлись старые тексты интерфейса. Задачи skip и screens он не трогает.", "",
-          f"approved: {'yes' if approved else 'no'}", "",
-          "# задача | решение | решение правил | основание для проверки (низкая достоверность)"]
-    for u in units:
+def default_mark(unit: Dict[str, Any], conf: Dict[str, Any]) -> str:
+    return "agent" if conf["level"] == "low" or unit["decision"]["action"]["value"] == "review" else "accept"
+
+
+def decision_of(unit: Dict[str, Any], mark: str) -> str:
+    """Отметка человека -> что делать с задачей.
+
+    accept - решение правил; reject - задача в работу не берется, а если правила ее отбросили,
+    то задачу проверяет агент; agent - решение проверяет агент.
+    """
+    action = unit["decision"]["action"]["value"]
+    if mark == "accept":
+        return OF_ACTION[action]
+    if mark == "reject":
+        return "agent" if action == "skip" else "skip"
+    return "agent"
+
+
+def _cell(s: str) -> str:
+    return (s or "").replace("|", "/").replace("\n", " ").strip()
+
+
+def summary_of(unit: Dict[str, Any]) -> str:
+    sig = [e for e in unit["entries"] if e["_flags"].get("significant")]
+    pool = sig or unit["entries"]
+    text = _cell(pool[0]["text"]) if pool else ""
+    if len(text) > SUMMARY_LEN:
+        text = text[:SUMMARY_LEN].rstrip() + "..."
+    more = len(pool) - 1
+    return text + (f" (и еще записей: {more})" if more > 0 else "")
+
+
+def render(ds, units: List[Dict[str, Any]], conf: Dict[str, Dict[str, Any]], code_edits: List[Dict[str, Any]],
+           rn_files: List[Dict[str, Any]], jira_count: int, marks: Optional[Dict[str, str]] = None,
+           reviewed: bool = False) -> str:
+    marks = marks or {}
+    v = ds.versions
+    L = [f"# Проверка решений: релиз {v['release']} (набор данных {ds.name})", "",
+         f"Проверено: [{'x' if reviewed else ' '}]", "",
+         "Этот файл собран кодом. Агент запустится только после вашей проверки.", "",
+         "1. В таблице ниже у каждой задачи стоит одна отметка `[x]`. Если не согласны, переставьте ее.",
+         "2. Поставьте `x` в строке «Проверено» наверху: `Проверено: [x]`.",
+         f"3. Запустите: `python3 -m pipeline agent {ds.name}`.", "",
+         "| Отметка | Что значит |", "| --- | --- |",
+         "| Принять | Согласен с решением правил |",
+         "| Отклонить | Не согласен: задачу в работу не брать. Если правила задачу отбросили, ее проверит агент |",
+         "| Агенту | Пусть решение проверит агент по коду |", "",
+         "## Версии", "",
+         "| Что | Значение | Откуда |", "| --- | --- | --- |",
+         f"| Новый релиз | {v['release']} | {v['release_source']} |",
+         f"| Дата релиза | {v['release_date'] or 'неизвестна'} | база знаний или release notes техписа |",
+         f"| Документация предыдущего релиза | {v['docs_base_version'] or 'не определена'} | последний файл release notes |",
+         f"| Интерфейс | {v['ui_old']} -> {v['ui_new']} | `{P.APP_PACKAGE_JSON}` в папках с кодом |",
+         f"| Задач Jira в выгрузке | {jira_count} | `{P.SLOT_JIRA}/` |", ""]
+    for n in v["notes"]:
+        L.append(f"- **Внимание:** {n}")
+    if jira_count == 0:
+        L.append("- **Внимание:** выгрузки Jira нет, продукт определяется только по коду. Запрос для выгрузки: `jira_query.txt`.")
+    L += ["", "## Что уже сделал код", ""]
+    for b in code_edits:
+        warn = (f" **В этом языке стояло {b['old']}, а не {b['expected_old']}: в прошлом релизе версию не обновили.**"
+                if b["mismatch"] else "")
+        L.append(f"- [{b['lang']}] `{b['file']}`: версия интерфейса `{b['variable']}` {b['old']} -> {b['new']}.{warn}")
+    if not code_edits:
+        L.append(f"- Переменная `{P.UI_VERSION_VARIABLE}` в документации не найдена, версия не обновлена.")
+    for r in rn_files:
+        L.append(f"- [{r['lang']}] Черновик release notes: `{P.OUT_RESULT}/MD_{r['lang']}/docs/{r['file']}` ({r['status']}).")
+    L += ["", "## Решения по задачам", "",
+          "| Задача | Что изменилось | Решение правил | Основание для проверки | Принять | Отклонить | Агенту |",
+          "| --- | --- | --- | --- | :-: | :-: | :-: |"]
+    order = {"doc": 0, "rn": 1, "langs": 2, "screens": 3, "agent": 4, "skip": 5}
+
+    def key(u):
+        low = conf[u["id"]]["level"] == "low"
+        return (4 if low else order[OF_ACTION[u["decision"]["action"]["value"]]], u["id"])
+
+    template = jira_template(ds)
+    for u in sorted(units, key=key):
         c = conf[u["id"]]
-        why = "; ".join(f"{f['rule']}: {f['text']}" for f in c["flags"] if f["kind"] == "decision")
-        L.append(f"{u['id']} | {keep.get(u['id'], proposal(u, c))} | {rule_text(u)} | {why}")
-    return "\n".join(L) + "\n"
+        url = task_url(template, u.get("task"))
+        name = f"[{u['id']}]({url})" if url else u["id"]
+        why = "; ".join(f"{f['rule']}: {f['short']}" for f in c["flags"] if f["kind"] == "decision")
+        m = marks.get(u["id"], default_mark(u, c))
+        boxes = " | ".join("[x]" if m == k else "[ ]" for k in MARKS)
+        L.append(f"| {name} | {summary_of(u)} | {rule_text(u)} | {why} | {boxes} |")
+    L += ["", "Коды в скобках - сработавшие правила: В - продукт, Г - видимость, Д - вид изменения, И - достоверность "
+          "решения. Расшифровка: `docs/RULES.md`. Все записи, файлы и тексты по каждой задаче: `report.md`.", ""]
+    return "\n".join(L).replace("—", "-")
 
 
 def parse(text: str) -> Dict[str, Any]:
-    approved = False
-    decisions: Dict[str, str] = {}
+    reviewed = False
+    marks: Dict[str, str] = {}
     auto: Dict[str, str] = {}
     errors: List[str] = []
     for n, line in enumerate(text.splitlines(), 1):
         s = line.strip()
-        if not s or s.startswith("#"):
+        if s.lower().startswith("проверено"):
+            reviewed = bool(ON_RE.search(s))
             continue
-        if s.lower().startswith("approved"):
-            approved = s.split(":", 1)[-1].strip().lower() in ("yes", "да", "true", "1")
+        if not s.startswith("|"):
             continue
-        parts = [p.strip() for p in s.split("|")]
-        if len(parts) < 2:
-            errors.append(f"строка {n}: не разобрана: {s}")
+        cells = [c.strip() for c in s.strip("|").split("|")]
+        if len(cells) < 7 or not all(BOX_RE.fullmatch(c) for c in cells[-3:]):
             continue
-        if parts[1] not in DECISIONS:
-            errors.append(f"строка {n}: неизвестное решение '{parts[1]}' у {parts[0]}. Допустимо: {', '.join(DECISIONS)}")
+        m = ID_RE.search(cells[0])
+        if not m:
             continue
-        decisions[parts[0]] = parts[1]
-        auto[parts[0]] = parts[2] if len(parts) > 2 else ""
-    return {"approved": approved, "decisions": decisions, "auto": auto, "errors": errors}
+        uid = m.group(1)
+        on = [k for k, c in zip(MARKS, cells[-3:]) if ON_RE.fullmatch(c)]
+        if len(on) != 1:
+            errors.append(f"строка {n}, {uid}: нужна ровно одна отметка [x], сейчас их {len(on)}")
+            continue
+        marks[uid] = on[0]
+        auto[uid] = cells[2]
+    return {"reviewed": reviewed, "marks": marks, "auto": auto, "errors": errors}
 
 
-def write(path: Path, dataset: str, release: str, units, conf, force: bool = False) -> str:
-    """Не затирает правки человека. Возвращает, что сделано: created | kept | updated."""
+def decisions(val: Dict[str, Any], units: List[Dict[str, Any]]) -> Dict[str, str]:
+    return {u["id"]: decision_of(u, val["marks"][u["id"]]) for u in units if u["id"] in val["marks"]}
+
+
+def proposals(units: List[Dict[str, Any]], conf: Dict[str, Dict[str, Any]]) -> Dict[str, str]:
+    return {u["id"]: decision_of(u, default_mark(u, conf[u["id"]])) for u in units}
+
+
+def write(path: Path, ds, units, conf, code_edits, rn_files, jira_count: int, force: bool = False) -> str:
+    """Не затирает отметки человека. Возвращает, что сделано: created | kept | updated."""
     old = read_text(path)
     if old is None or force:
-        save_text(path, render(dataset, release, units, conf))
+        save_text(path, render(ds, units, conf, code_edits, rn_files, jira_count))
         return "created"
     prev = parse(old)
-    same = all(prev["auto"].get(u["id"]) == rule_text(u) for u in units) and set(prev["decisions"]) == {u["id"] for u in units}
-    if same:
+    same = all(prev["auto"].get(u["id"]) == rule_text(u) for u in units) and set(prev["marks"]) == {u["id"] for u in units}
+    if same and not prev["errors"]:
+        save_text(path, render(ds, units, conf, code_edits, rn_files, jira_count, marks=prev["marks"], reviewed=prev["reviewed"]))
         return "kept"
-    # правила дали другой результат: решения человека сохраняем там, где предложение правил не изменилось
-    keep = {u["id"]: prev["decisions"][u["id"]] for u in units
-            if u["id"] in prev["decisions"] and prev["auto"].get(u["id"]) == rule_text(u)}
-    save_text(path, render(dataset, release, units, conf, keep=keep, approved=False))
+    # правила дали другой результат: отметки сохраняются там, где решение правил не изменилось
+    keep = {u["id"]: prev["marks"][u["id"]] for u in units
+            if u["id"] in prev["marks"] and prev["auto"].get(u["id"]) == rule_text(u)}
+    save_text(path, render(ds, units, conf, code_edits, rn_files, jira_count, marks=keep, reviewed=False))
     return "updated"

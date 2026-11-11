@@ -23,21 +23,20 @@ jobs:
         with:
           python-version-file: '.python-version'
 
-      - name: Collect changes and build the draft
+      - name: Collect changes and build the review file
         env:
           DATASET: ${{ inputs.dataset }}
         run: python -m pipeline collect "$DATASET" --out output/run
 
-      - name: Show the draft
-        run: cat output/run/draft.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Show the review file
+        run: cat output/run/review.md >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v7
         with:
-          name: draft
+          name: review
           path: |
-            output/run/draft.md
+            output/run/review.md
             output/run/report.md
-            output/run/validation.txt
             output/run/jira_query.txt
             output/run/result/
           if-no-files-found: error

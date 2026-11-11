@@ -218,3 +218,42 @@ def diff_strings(old_rows: List[Dict[str, str]], new_rows: List[Dict[str, str]],
 def locale_dirs(root: Path, app_translations: str) -> List[str]:
     d = root / app_translations
     return sorted(p.name for p in d.iterdir() if p.is_dir()) if d.is_dir() else []
+
+
+PLURAL_SUFFIX_RE = re.compile(r"_(zero|one|two|few|many|other)$")
+USAGE_EXT = (".ts", ".tsx", ".js", ".jsx")
+
+
+def usage_ref(key: str) -> Optional[str]:
+    """'personCard.unavailable_lists_one' -> 'personCard.unavailable_lists'. Ключ из одного слова слишком общий."""
+    parts = key.split(".")
+    if len(parts) < 2:
+        return None
+    return parts[-2] + "." + PLURAL_SUFFIX_RE.sub("", parts[-1])
+
+
+def key_usage(root: Path, wanted: List[Dict[str, str]], rules: Dict[str, Any]) -> Dict[str, List[str]]:
+    """В каких файлах кода используется ключ перевода: {'файл::ключ': [файлы]}.
+
+    Ищется вызов вида t('...personCard.unavailable_lists'). Если вызов не найден, ключа в результате нет:
+    отсутствие ссылки ничего не доказывает.
+    """
+    refs: Dict[str, List[str]] = defaultdict(list)
+    for r in wanted:
+        ref = usage_ref(r["key"])
+        if ref:
+            refs[ref].append(f"{r['file']}::{r['key']}")
+    if not refs:
+        return {}
+    rx = re.compile("(" + "|".join(re.escape(x) for x in sorted(refs, key=len, reverse=True)) + r")['\"`]")
+    globs = rules["i18n"]["file_globs"]
+    out: Dict[str, set] = defaultdict(set)
+    for rel in walk_files(root):
+        r = str(rel)
+        if not r.endswith(USAGE_EXT) or is_i18n_file(r, globs):
+            continue
+        src = read_text(root / rel) or ""
+        for m in set(rx.findall(src)):
+            for k in refs[m]:
+                out[k].add(r)
+    return {k: sorted(v) for k, v in sorted(out.items())}

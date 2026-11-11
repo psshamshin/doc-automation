@@ -1,7 +1,7 @@
 """Команды пайплайна.
 
     python3 -m pipeline collect <набор>    сбор изменений, отбор по правилам, черновик
-    python3 -m pipeline agent <набор>      агент: проверка решений с низкой достоверностью и текст (после validation.txt)
+    python3 -m pipeline agent <набор>      агент: проверка решений с низкой достоверностью и текст (после проверки review.md)
     python3 -m pipeline compare <набор>    сравнение результата с документацией техписа
     python3 -m pipeline versions <набор>   показать, какие версии определились
     python3 -m pipeline learn <набор>      записать релизы из документации в базу знаний
@@ -46,23 +46,22 @@ def cmd_collect(ds: Dataset, args) -> None:
 
     units, conf = _review(ds)
     us = units["units"]
-    proposals = {u["id"]: V.proposal(u, conf[u["id"]]) for u in us}
+    proposals = V.proposals(us, conf)
     index = load_json(ds.data_dir / "06_docs_index.json")
     bumps = DRAFT.bump_versions(ds, units["component_versions"])
     rn = DRAFT.write_release_notes(ds, us, proposals, conf, index)
-    status = V.write(ds.run_dir / V.FILE_NAME, ds.name, ds.release, us, conf, force=args.force)
-    status_text = {"created": "создан, ждет проверки", "kept": "без изменений, ваши правки сохранены",
-                   "updated": "обновлен: правила дали другой результат, одобрение снято"}[status]
     jira = load_json(ds.data_dir / "04_jira.json")
+    status = V.write(ds.run_dir / V.FILE_NAME, ds, us, conf, bumps, rn, len(jira), force=args.force)
+    status_text = {"created": "создан, ждет проверки", "kept": "ваши отметки сохранены",
+                   "updated": "обновлен: решения правил изменились, отметка «Проверено» снята"}[status]
     save_json(ds.data_dir / "07_review.json", {"versions": ds.versions, "proposals": proposals, "confidence": conf,
                                               "code_edits": bumps, "release_notes": rn})
-    save_text(ds.run_dir / "draft.md", DRAFT.build(ds, us, conf, proposals, bumps, rn, index, len(jira)))
     q = DRAFT.jira_query(us)
     if q:
         save_text(ds.run_dir / "jira_query.txt", q + "\n")
     low = sum(1 for c in conf.values() if c["level"] == "low")
-    log(f"черновик: {ds.run_dir / 'draft.md'}")
-    log(f"решений с низкой достоверностью: {low} из {len(us)}; файл проверки: {ds.run_dir / V.FILE_NAME} ({status_text})")
+    log(f"решений с низкой достоверностью: {low} из {len(us)}")
+    log(f"файл проверки: {ds.run_dir / V.FILE_NAME} ({status_text})")
 
 
 def cmd_agent(ds: Dataset, args) -> None:
@@ -73,27 +72,28 @@ def cmd_agent(ds: Dataset, args) -> None:
     val = V.parse(text)
     if val["errors"]:
         raise DatasetError("ошибки в файле проверки:\n  " + "\n  ".join(val["errors"]))
-    if not val["approved"] and not args.approve:
-        raise DatasetError(f"решения не одобрены: проверьте {vpath} и поставьте в нем 'approved: yes'")
+    if not val["reviewed"] and not args.approve:
+        raise DatasetError(f"решения не проверены: откройте {vpath} и поставьте 'Проверено: [x]'")
     units, conf = _review(ds)
     us = units["units"]
-    unknown = [u["id"] for u in us if u["id"] not in val["decisions"]]
+    unknown = [u["id"] for u in us if u["id"] not in val["marks"]]
     if unknown:
         raise DatasetError("в файле проверки нет задач: " + ", ".join(unknown) + ". Перезапустите collect")
+    decided = V.decisions(val, us)
     index = load_json(ds.data_dir / "06_docs_index.json")
 
     def redraft(final):
         DRAFT.write_release_notes(ds, us, final, conf, index)
 
-    res = AG.run(ds, us, conf, val["decisions"], dry_run=args.dry_run, cmd=args.cmd, redo=args.redo,
+    res = AG.run(ds, us, conf, decided, dry_run=args.dry_run, cmd=args.cmd, redo=args.redo,
                  timeout=args.timeout, on_decided=redraft)
-    save_text(ds.agent_dir / "summary.md", AG.summary_md(ds, res, val["decisions"]))
+    save_text(ds.agent_dir / "summary.md", AG.summary_md(ds, res, decided))
     counts = {}
     for i in res["items"]:
         counts[i["status"]] = counts.get(i["status"], 0) + 1
     log("задания агента: " + (", ".join(f"{k} - {v}" for k, v in sorted(counts.items())) or "нет"))
     if not res["available"] and not args.dry_run:
-        log(f"команда '{res['command'][0]}' не найдена: задания подготовлены в {ds.agent_dir / 'tasks'}, агент не запускался")
+        log(f"агент не настроен: задания подготовлены в {ds.agent_dir / 'tasks'}. Запуск: --cmd \"<команда агента>\"")
     log(f"итог: {ds.agent_dir / 'summary.md'}")
     if any(i["status"] == "failed" for i in res["items"]):
         raise SystemExit(1)
@@ -136,11 +136,11 @@ def main(argv: Optional[List[str]] = None) -> None:
     ap.add_argument("dataset", help="имя папки в input/ или путь к папке с данными")
     ap.add_argument("--out", help="куда писать результаты (по умолчанию output/<набор>)")
     ap.add_argument("--release", help="версия нового релиза, если она не определилась сама; запоминается в базе знаний")
-    ap.add_argument("--force", action="store_true", help="collect: пересоздать рабочую копию документации и файл проверки")
+    ap.add_argument("--force", action="store_true", help="collect: пересоздать рабочую копию документации и файл проверки (стирает правки)")
     ap.add_argument("--dry-run", action="store_true", help="agent: только подготовить задания, агента не запускать")
-    ap.add_argument("--approve", action="store_true", help="agent: считать решения одобренными без правки validation.txt")
+    ap.add_argument("--approve", action="store_true", help="agent: считать решения проверенными без отметки в review.md")
     ap.add_argument("--redo", action="store_true", help="agent: выполнить заново уже выполненные задания")
-    ap.add_argument("--cmd", help="agent: команда запуска агента (по умолчанию claude -p ...)")
+    ap.add_argument("--cmd", help="agent: команда запуска агента; текст задания подается ей на стандартный ввод")
     ap.add_argument("--timeout", type=int, default=1800, help="agent: секунд на одно задание")
     args = ap.parse_args(argv)
     t0 = time.time()

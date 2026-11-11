@@ -1,8 +1,8 @@
-"""Черновик, который код собирает сам, до агента.
+"""Правки, которые код вносит сам, до агента.
 
-* правит версию интерфейса в рабочей копии документации;
-* собирает черновик release notes из записей ченджлога по образцу прошлого релиза;
-* пишет draft.md: что определилось, что сделал код, у каких решений низкая достоверность и что останется агенту.
+* заменяет версию интерфейса в рабочей копии документации;
+* собирает черновик release notes из записей ченджлога по образцу прошлого релиза.
+Сводка для человека - файл проверки review.md (pipeline/validation.py).
 """
 
 from __future__ import annotations
@@ -13,7 +13,6 @@ from typing import Any, Dict, List, Optional
 
 from . import docs as DOCS
 from . import product as P
-from . import validation as V
 from .common import read_text, save_text
 
 DRAFT_MARK = "<!-- ЧЕРНОВИК: собран кодом из ченджлога. Формулировки и перевод уточняет агент. -->"
@@ -151,115 +150,8 @@ def write_release_notes(ds, units: List[Dict[str, Any]], decisions: Dict[str, st
     return out
 
 
-# ---------------------------------------------------------------- draft.md
+# ---------------------------------------------------------------- запрос для Jira
 
 def jira_query(units: List[Dict[str, Any]]) -> str:
     keys = sorted({u["task"] for u in units if u.get("task")})
     return "key in (" + ", ".join(keys) + ")" if keys else ""
-
-
-def _cell(s: str) -> str:
-    return (s or "").replace("|", "\\|").replace("\n", " ")
-
-
-def build(ds, units, conf, decisions, bumps, rn_files, index, jira_count: int) -> str:
-    v = ds.versions
-    titles = page_titles(index, "rus")
-    name = ds.name
-    L: List[str] = [f"# Черновик: релиз {v['release']} (набор данных {name})", ""]
-    L += ["Этот файл собран кодом, агент еще не запускался. Порядок работы:", "",
-          "1. Прочитайте черновик. Подробности по каждой задаче: `report.md`.",
-          f"2. Проверьте решения в `{V.FILE_NAME}`, поправьте, с чем не согласны, поставьте `approved: yes`.",
-          f"3. Запустите агента: `python3 -m pipeline agent {name}`. Он проверит задачи из раздела 4 и напишет текст "
-          "для задач из раздела 5.", "",
-          "Достоверность решения низкая, если правила не сработали или решение опирается только на косвенные "
-          "признаки. Критерии: `docs/RULES.md`, группа И.", ""]
-
-    L += ["## 1. Что определилось автоматически", "",
-          "| Что | Значение | Откуда |", "| --- | --- | --- |",
-          f"| Новый релиз | {v['release']} | {v['release_source']} |",
-          f"| Дата релиза | {v['release_date'] or 'неизвестна'} | база знаний или release notes техписа |",
-          f"| Документация предыдущего релиза | {v['docs_base_version'] or 'не определена'} | последний файл release notes |",
-          f"| Интерфейс: было | {v['ui_old']} | `{P.SLOT_CODE_OLD}/{P.APP_PACKAGE_JSON}` |",
-          f"| Интерфейс: стало | {v['ui_new']} | `{P.SLOT_CODE_NEW}/{P.APP_PACKAGE_JSON}` |",
-          f"| Задач Jira в выгрузке | {jira_count} | `{P.SLOT_JIRA}/` |", ""]
-    for n in v["notes"]:
-        L.append(f"- **Внимание:** {n}")
-    if jira_count == 0:
-        q = jira_query(units)
-        L += ["- **Внимание:** выгрузки Jira нет, продукт определяется только по коду.",
-              f"  Запрос для выгрузки (Jira -> Фильтры -> Расширенный поиск): `{q}`"]
-    L.append("")
-
-    L += ["## 2. Что уже сделал код", ""]
-    if bumps:
-        for b in bumps:
-            warn = f" **В доке стояло {b['old']}, а ожидалось {b['expected_old']}: проверить.**" if b["mismatch"] else ""
-            L.append(f"- [{b['lang']}] `{b['file']}`:{b['line']}: `{b['variable']}` {b['old']} -> {b['new']}.{warn}")
-    else:
-        L.append(f"- Переменная `{P.UI_VERSION_VARIABLE}` в документации не найдена, версия не обновлена.")
-    for r in rn_files:
-        extra = f": изменений {r['changes']}, исправлений {r['fixes']}, не решено {len(r['pending'])}" if "changes" in r else ""
-        L.append(f"- [{r['lang']}] `{P.OUT_RESULT}/MD_{r['lang']}/docs/{r['file']}`: {r['status']}{extra}.")
-    L += ["", "Текст страниц документации код не пишет: это работа агента.", ""]
-
-    L += ["## 3. Решения по задачам", "",
-          "| Задача | Предложение | Решение правил | Достоверность | Страницы |", "| --- | --- | --- | --- | --- |"]
-    order = {"doc": 0, "rn": 1, "langs": 2, "screens": 3, "agent": 4, "skip": 5}
-    for u in sorted(units, key=lambda u: (order[decisions[u["id"]]], u["id"])):
-        c = conf[u["id"]]
-        pages = ", ".join(titles.get(x["doc"], x["doc"].split("/")[-1]) for x in u["doc_candidates"][:4])
-        L.append(f"| {u['id']} | {decisions[u['id']]} | {V.rule_text(u)} | "
-                 f"{'**низкая**' if c['level'] == 'low' else 'высокая'} | {_cell(pages)} |")
-    L += ["", "Предложение: " + "; ".join(f"`{k}` - {t}" for k, t in V.DECISIONS.items()) + ".", ""]
-
-    flagged = [u for u in units if conf[u["id"]]["level"] == "low"]
-    L += ["## 4. Решения с низкой достоверностью: проверяет агент", ""]
-    if not flagged:
-        L += ["Таких решений нет.", ""]
-    for u in flagged:
-        L += [f"### {u['id']}", "", f"Решение правил: {V.rule_text(u)}.", "", "Основание для проверки:", ""]
-        L += [f"- {f['rule']}: {f['text']}" for f in conf[u["id"]]["flags"]]
-        L += ["", "Записи:", ""]
-        for e in u["entries"]:
-            mark = "" if e["_flags"].get("significant") else " *(не учитывается)*"
-            L.append(f"- {_cell(e['text'])[:260]}{mark}")
-        L.append("")
-
-    work = [u for u in units if decisions[u["id"]] in ("doc", "rn", "langs", "screens")]
-    L += ["## 5. Решения с высокой достоверностью", ""]
-    for u in work:
-        d = decisions[u["id"]]
-        L += [f"### {u['id']}: {V.DECISIONS[d]}", ""]
-        for t in significant_texts(u)[:MAX_SUBLINES]:
-            L.append(f"- {_cell(t)[:260]}")
-        cands = [x["doc"] for x in u["doc_candidates"]]
-        if cands:
-            L.append("- Страницы: " + ", ".join(f"`{x}`" for x in cands))
-        i = u["i18n"]
-        new_ru = [x["value"] for x in i["added"] if x["locale"] == "ru"][:6]
-        if new_ru:
-            L.append("- Новые тексты интерфейса: " + ", ".join(f"«{_cell(x)}»" for x in new_ru))
-        for c in [c for c in i["changed"] if c["locale"] == "ru"][:6]:
-            L.append(f"- Текст изменен: «{_cell(c['old'])}» -> «{_cell(c['new'])}»")
-        for lang, hits in (u.get("doc_mentions") or {}).items():
-            for needle, found in list(hits.items())[:4]:
-                L.append(f"- Старый текст «{_cell(needle)}» есть в документации [{lang}]: "
-                         + ", ".join(f"`{h['file']}`:{h['line']}" for h in found[:4]))
-        place = [f["text"] for f in conf[u["id"]]["flags"] if f["kind"] == "place"]
-        if place:
-            L.append("- Замечания: " + "; ".join(place))
-        agent_job = {"doc": "агент напишет текст правок", "langs": "агент сверит список языков",
-                     "screens": "агент не нужен: проверьте скриншоты страниц вручную",
-                     "rn": "агент проверит документацию" if u.get("doc_mentions") else
-                           "агент не нужен: старых текстов в документации не найдено"}[d]
-        L += [f"- Дальше: {agent_job}.", ""]
-
-    dropped = [u for u in units if decisions[u["id"]] == "skip"]
-    L += ["## 6. Отброшено", ""]
-    for u in dropped:
-        d = u["decision"]
-        first = (u["entries"][0]["text"] if u["entries"] else "")[:140]
-        L.append(f"- {u['id']}: {d['action']['why']} ({d['product']['rule']}, {d['visibility']['rule']}). {_cell(first)}")
-    L.append("")
-    return "\n".join(L).replace("—", "-")

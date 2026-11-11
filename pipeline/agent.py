@@ -25,8 +25,9 @@ from . import product as P
 from . import validation as V
 from .common import ROOT, load_json, log, read_text, save_json, save_text
 
-DEFAULT_CMD = ["claude", "-p", "--permission-mode", "acceptEdits", "--allowedTools", "Read,Glob,Grep,Edit,Write",
-               "--settings", "agent/settings.json", "--max-turns", "60", "--output-format", "json"]
+# Агент не выбран: по умолчанию задания только готовятся. Команда задается параметром --cmd или переменной
+# окружения DOC_AGENT_CMD. Она получает текст задания на стандартный ввод и должна записать файл ответа.
+# Пример для Claude Code: claude -p --permission-mode acceptEdits --settings agent/settings.json
 PROMPTS = ROOT / "agent" / "prompts"
 KIND_ORDER = ["decide", "write_doc", "check_doc", "check_langs", "release_notes"]
 ANSWER_REQUIRED = ["item", "status", "summary"]
@@ -35,7 +36,7 @@ STATUSES = ("done", "needs_human")
 
 def agent_cmd(cmd: Optional[str]) -> List[str]:
     cmd = cmd or os.environ.get("DOC_AGENT_CMD")
-    return shlex.split(cmd) if cmd else list(DEFAULT_CMD)
+    return shlex.split(cmd) if cmd else []
 
 
 # ---------------------------------------------------------------- очередь
@@ -168,7 +169,7 @@ def run(ds, units: List[Dict[str, Any]], conf: Dict[str, Any], decisions: Dict[s
     adir = ds.agent_dir
     by_id = {u["id"]: u for u in units}
     command = agent_cmd(cmd)
-    available = shutil.which(command[0]) is not None
+    available = bool(command) and shutil.which(command[0]) is not None
     state_path = adir / "queue.json"
     prev = {i["id"]: i for i in (load_json(state_path)["items"] if state_path.is_file() else [])}
     final = dict(decisions)
@@ -209,7 +210,7 @@ def run(ds, units: List[Dict[str, Any]], conf: Dict[str, Any], decisions: Dict[s
 def summary_md(ds, res: Dict[str, Any], decisions: Dict[str, str]) -> str:
     L = [f"# Работа агента: набор данных {ds.name}", ""]
     if not res["available"]:
-        L += [f"Команда агента `{res['command'][0]}` не найдена: задания только подготовлены в `{P.OUT_AGENT}/tasks/`.", ""]
+        L += [f"Агент не настроен или его команда не найдена: задания только подготовлены в `{P.OUT_AGENT}/tasks/`.", ""]
     L += ["| Задание | Вид | Состояние | Итог |", "| --- | --- | --- | --- |"]
     for i in res["items"]:
         L.append(f"| {i['id']} | {i['kind']} | {i['status']} | {(i.get('note') or '').replace('|', '/')} |")

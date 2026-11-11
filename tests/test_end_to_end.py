@@ -17,7 +17,7 @@ from tests.helpers import DEMO, ROOT
 
 STUB = f"{sys.executable} {ROOT / 'tests' / 'stub_agent.py'}"
 DATA_FILES = ["01_changelog.json", "02_code_diff.json", "02_reachability.json", "03_i18n_diff.json",
-              "03_i18n_rows.json", "04_jira.json", "05_units.json", "06_docs_index.json", "07_review.json"]
+              "03_i18n_rows.json", "03_i18n_usage.json", "04_jira.json", "05_units.json", "06_docs_index.json", "07_review.json"]
 
 
 def run(command, out, *extra):
@@ -25,7 +25,7 @@ def run(command, out, *extra):
 
 
 def digests(out: Path):
-    files = [out / P.OUT_DATA / n for n in DATA_FILES] + [out / "report.md", out / "draft.md", out / V.FILE_NAME]
+    files = [out / P.OUT_DATA / n for n in DATA_FILES] + [out / "report.md", out / V.FILE_NAME]
     return {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in files}
 
 
@@ -43,7 +43,7 @@ class CollectTest(unittest.TestCase):
         return self.out.joinpath(*parts).read_text(encoding="utf-8")
 
     def test_output_structure(self):
-        for name in ("report.md", "draft.md", V.FILE_NAME, "jira_query.txt"):
+        for name in ("report.md", V.FILE_NAME, "jira_query.txt"):
             self.assertTrue((self.out / name).is_file(), name)
         for n in DATA_FILES:
             self.assertTrue((self.out / P.OUT_DATA / n).is_file(), n)
@@ -74,22 +74,25 @@ class CollectTest(unittest.TestCase):
         self.assertIn("| demo-api   | 1.0.0      |", rn)
         self.assertIn('- **[Раздел "Заказы"]**: Добавлен фильтр заказов по дате <!-- GUI-105 -->', rn)
         self.assertIn("GUI-104", rn)
-        self.assertNotIn("**Исправленные ошибки**", rn)   # единственное исправление еще не подтверждено
-        self.assertIn("Не решено", rn)
+        self.assertIn("**Исправленные ошибки**", rn)
+        self.assertIn("Не решено, строки появятся после работы агента: NOTASK:0.10.0#7", rn)
         en = self.text(P.OUT_RESULT, "MD_eng", "docs", "release-notes", "020.md")
         self.assertIn('- **["Orders" section]**:', en)
         self.assertIn("TODO перевод", en)
         self.assertIn("- 020.md\n        - 010.md", self.text(P.OUT_RESULT, "MD_rus", "docs", "release-notes", ".pages"))
 
-    def test_draft(self):
-        d = self.text("draft.md")
+    def test_single_review_file(self):
+        self.assertFalse((self.out / "draft.md").exists())
+        d = self.text(V.FILE_NAME)
+        self.assertIn("Проверено: [ ]", d)
         self.assertIn("| Новый релиз | 0.2.0 |", d)
-        self.assertIn("| GUI-103 | agent | RN + проверить доку (В5, Г5, Д8) | **низкая** |", d)
-        self.assertIn("- И3: видимость определена только по словам", d)
-        self.assertIn("key in (GUI-101, GUI-102, GUI-103, GUI-104, GUI-105, GUI-106)", d)
+        self.assertIn("версия интерфейса `SECURE_CLIENT_VER` 0.8.0 -> 0.10.0", d)
+        self.assertIn("| GUI-105 | Добавлен фильтр заказов по дате | в доку + RN (В5, Г1, Д2) |  | [x] | [ ] | [ ] |", d)
+        self.assertIn("| И1: продукт не определен | [ ] | [ ] | [x] |", d)
+        self.assertEqual(self.text("jira_query.txt").strip(), "key in (GUI-101, GUI-102, GUI-103, GUI-104, GUI-105, GUI-106)")
 
     def test_no_absolute_paths_and_no_time(self):
-        for n in DATA_FILES + ["../report.md", "../draft.md"]:
+        for n in DATA_FILES + ["../report.md", "../" + V.FILE_NAME]:
             self.assertNotIn(str(ROOT), (self.out / P.OUT_DATA / n).read_text(encoding="utf-8"), n)
 
     def test_rerun_is_identical(self):
@@ -109,12 +112,17 @@ class AgentTest(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.out, True)
         run("collect", self.out)
 
-    def approve(self, **changes):
+    def approve(self, **marks):
+        """Ставит 'Проверено' и переставляет отметки: 0 - принять, 1 - отклонить, 2 - агенту."""
         p = self.out / V.FILE_NAME
-        text = p.read_text(encoding="utf-8").replace("approved: no", "approved: yes")
-        for uid, d in changes.items():
-            text = text.replace(f"{uid} | agent", f"{uid} | {d}")
-        p.write_text(text, encoding="utf-8")
+        lines = p.read_text(encoding="utf-8").replace("Проверено: [ ]", "Проверено: [x]").splitlines()
+        for uid, column in marks.items():
+            for i, line in enumerate(lines):
+                if line.startswith("|") and uid in line.split("|")[1]:
+                    cells = line.rstrip("|").split("|")
+                    cells[-3:] = [" [x] " if n == column else " [ ] " for n in range(3)]
+                    lines[i] = "|".join(cells) + "|"
+        p.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     def queue(self):
         return {i["id"]: i for i in json.loads((self.out / P.OUT_AGENT / "queue.json").read_text(encoding="utf-8"))["items"]}
@@ -126,28 +134,28 @@ class AgentTest(unittest.TestCase):
         self.assertFalse((self.out / P.OUT_AGENT).exists())
 
     def test_dry_run_prepares_tasks_only(self):
-        self.approve()
+        self.approve(**{"GUI-103": 2})
         run("agent", self.out, "--dry-run")
         q = self.queue()
         self.assertEqual(sorted(q), ["GUI-103__decide", "GUI-104__check_langs", "GUI-105__write_doc", "GUI-106__write_doc",
                                      "NOTASK_0.10.0_7__decide", "release_notes"])
         self.assertTrue(all(i["status"] == "prepared" for i in q.values()))
         task = (self.out / P.OUT_AGENT / "tasks" / "GUI-103__decide.md").read_text(encoding="utf-8")
-        self.assertIn("И3: видимость определена только по словам", task)
+        self.assertIn("Решение правил: RN + проверить доку (В5, Г5, Д8).", task)
         self.assertIn("answers/GUI-103__decide.json", task)
         patch = re.search(r"патч: `([^`]+)`", task).group(1)
         self.assertTrue(Path(patch).is_file() or (ROOT / patch).is_file(), patch)
         self.assertNotIn("{{", task.replace("{{count}}", ""))
 
     def test_agent_gets_only_what_rules_could_not_do(self):
-        # человек сам решил обе спорные задачи: заданий decide нет
-        self.approve(**{"GUI-103": "rn", "NOTASK:0.10.0#7": "skip"})
+        # человек сам отклонил задачу с низкой достоверностью: заданий decide нет
+        self.approve(**{"NOTASK:0.10.0#7": 1})
         run("agent", self.out, "--dry-run")
         kinds = sorted(i["kind"] for i in self.queue().values())
         self.assertEqual(kinds, ["check_langs", "release_notes", "write_doc", "write_doc"])
 
     def test_run_with_stub(self):
-        self.approve()
+        self.approve(**{"GUI-103": 2})
         run("agent", self.out, "--cmd", STUB)
         q = self.queue()
         self.assertTrue(all(i["status"] == "done" for i in q.values()), q)
@@ -159,6 +167,7 @@ class AgentTest(unittest.TestCase):
         self.assertIn("**Исправленные ошибки**", rn)
         self.assertIn("<!-- GUI-103", rn)
         self.assertNotIn("Не решено", rn)
+        self.assertTrue((self.out / P.OUT_AGENT / "logs" / "GUI-103__decide.log").is_file())
         self.assertIn("GUI-103: rn", (self.out / P.OUT_AGENT / "summary.md").read_text(encoding="utf-8"))
 
     def test_second_run_skips_done_items(self):
@@ -168,7 +177,7 @@ class AgentTest(unittest.TestCase):
         self.assertTrue(all(i["note"] == "уже выполнено раньше" for i in self.queue().values()))
 
     def test_failures_are_reported(self):
-        self.approve(**{"GUI-103": "rn", "NOTASK:0.10.0#7": "skip"})
+        self.approve(**{"NOTASK:0.10.0#7": 1})
         for mode, msg in (("no_answer", "не записал файл ответа"), ("bad_json", "не является JSON"), ("fail", "кодом 3")):
             with self.assertRaises(SystemExit):
                 run("agent", self.out, "--cmd", f"{STUB} {mode}", "--redo")
@@ -206,6 +215,17 @@ class ProjectFilesTest(unittest.TestCase):
         by = {r["release"]: r for r in kn["releases"]}
         self.assertEqual(by["2.3.0"]["ui"], "2.11.0")
         self.assertEqual(by["2.2.0"]["ui"], "2.9.4")
+
+
+class NoAgentConfiguredTest(unittest.TestCase):
+    def test_tasks_are_prepared_when_no_agent_command(self):
+        out = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, out, True)
+        run("collect", out)
+        run("agent", out, "--approve")
+        q = json.loads((out / P.OUT_AGENT / "queue.json").read_text(encoding="utf-8"))
+        self.assertFalse(q["agent_available"])
+        self.assertTrue(all(i["status"] == "prepared" for i in q["items"]))
 
 
 if __name__ == "__main__":

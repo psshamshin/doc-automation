@@ -48,6 +48,8 @@ KNOWLEDGE_DIR = "knowledge"
 RULES_FILE = "knowledge/rules.json"
 DOC_MAP_FILE = "knowledge/doc_map.json"
 RELEASES_FILE = "knowledge/releases.json"
+LINKS_FILE = "knowledge/links.json"          # адреса внешних систем (в git)
+LOCAL_LINKS_FILE = "knowledge/local.json"    # то же, но только на этой машине (в git не попадает)
 
 # ---- папки проекта
 INPUT_DIR = "input"
