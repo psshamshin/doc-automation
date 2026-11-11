@@ -1,19 +1,21 @@
-"""Общее для тестов: пути и сборка единиц на синтетической фикстуре (без записи на диск)."""
+"""Общее для тестов: пути и сборка задач на придуманных данных (без записи на диск)."""
 
 from pathlib import Path
 
 from pipeline import changelog as CL
 from pipeline import i18n_extract as I18N
 from pipeline import import_graph as IG
+from pipeline import product as P
 from pipeline import tree_diff as TD
 from pipeline import units as U
 from pipeline.common import load_json
 
 ROOT = Path(__file__).resolve().parent.parent
-FIX = ROOT / "tests" / "fixtures"
-OLD, NEW = FIX / "code-old", FIX / "code-new"
-RULES = load_json(ROOT / "config" / "rules.json")
-DOC_MAP = load_json(FIX / "doc_map.json")
+DEMO = ROOT / "tests" / "data" / "demo"
+OLD, NEW = DEMO / P.SLOT_CODE_OLD, DEMO / P.SLOT_CODE_NEW
+RULES = load_json(ROOT / P.RULES_FILE)
+DOC_MAP = load_json(DEMO / "doc_map.json")
+UI_OLD, UI_NEW = "0.8.0", "0.10.0"
 
 
 def entry(text, tags=(), type_="change", task="GUI-1", eid="1.0.0#1"):
@@ -25,8 +27,8 @@ def entry(text, tags=(), type_="change", task="GUI-1", eid="1.0.0#1"):
     return e
 
 
-def fixture_units():
-    cl = CL.collect(NEW / "apps/point/CHANGELOG.md", "1.0.0", "1.2.0")
+def demo_units():
+    cl = CL.collect(NEW / P.APP_CHANGELOG, UI_OLD, UI_NEW)
     code = TD.diff_trees(OLD, NEW, RULES, None)
     entry_dirs = RULES["attribution"]["entry_dirs"]
     reach = set(IG.reachable_from(OLD, entry_dirs)["files"]) | set(IG.reachable_from(NEW, entry_dirs)["files"])

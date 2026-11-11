@@ -1,4 +1,4 @@
-"""Общие утилиты: конфиг, пути, чтение и запись файлов, логирование."""
+"""Общие утилиты: пути, чтение и запись файлов, логирование."""
 
 from __future__ import annotations
 
@@ -113,40 +113,6 @@ def load_jsonc(path: Path) -> Any:
         return json.loads(strip_json_comments(text))
     except json.JSONDecodeError:
         return None
-
-
-class Config:
-    """Конфиг релиза + правила + карта доки. Пути считаются от каталога doc-automation."""
-
-    def __init__(self, path: Path):
-        self.path = path.resolve()
-        self.data: Dict[str, Any] = load_json(self.path)
-        base = self.path.parent.parent  # config/<file> → doc-automation
-        self.base = base
-        self.rules: Dict[str, Any] = load_json(self._p(self.data.get("rules", "config/rules.json")))
-        self.doc_map: Dict[str, Any] = load_json(self._p(self.data.get("doc_map", "config/doc_map.json")))
-
-    def _p(self, rel: str) -> Path:
-        p = Path(rel)
-        return p if p.is_absolute() else (self.base / p)
-
-    def path_of(self, key: str) -> Path:
-        return self._p(self.data["paths"][key])
-
-    @property
-    def release(self) -> str:
-        return self.data["release"]
-
-    @property
-    def run_dir(self) -> Path:
-        return self._p(self.data.get("run_dir", f"runs/{self.release}"))
-
-    @property
-    def langs(self) -> List[str]:
-        return self.data.get("doc_langs", ["rus", "eng"])
-
-    def get(self, key: str, default: Any = None) -> Any:
-        return self.data.get(key, default)
 
 
 def semver_key(v: str):

@@ -1,7 +1,8 @@
 import unittest
 
 from pipeline import changelog as CL
-from tests.helpers import NEW
+from pipeline import product as P
+from tests.helpers import NEW, UI_NEW, UI_OLD
 
 
 class ParseLineTest(unittest.TestCase):
@@ -19,17 +20,17 @@ class ParseLineTest(unittest.TestCase):
 
 class RangeTest(unittest.TestCase):
     def setUp(self):
-        self.cl = CL.collect(NEW / "apps/point/CHANGELOG.md", "1.0.0", "1.2.0")
+        self.cl = CL.collect(NEW / P.APP_CHANGELOG, UI_OLD, UI_NEW)
 
     def test_bounds(self):
         # А2: строго выше нижней границы и не выше верхней
-        self.assertEqual([v["version"] for v in self.cl["versions"]], ["1.2.0", "1.1.0"])
-        self.assertEqual(sorted(self.cl["outside_range_versions"]), ["1.0.0", "1.3.0"])
+        self.assertEqual([v["version"] for v in self.cl["versions"]], ["0.10.0", "0.9.0"])
+        self.assertEqual(sorted(self.cl["outside_range_versions"]), ["0.11.0", "0.8.0"])
 
     def test_entries(self):
         tasks = [e["task"] for e in self.cl["entries"]]
         self.assertEqual(len(tasks), 9)
-        self.assertNotIn("GUI-199", tasks)  # А3: версия 1.3.0 за границей
+        self.assertNotIn("GUI-199", tasks)  # А3: версия 0.11.0 за границей
         self.assertNotIn("GUI-90", tasks)   # нижняя граница не включается
         self.assertIn(None, tasks)          # Б3: запись без задачи
 

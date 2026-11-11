@@ -1,0 +1,55 @@
+# Задача 2. Работа агента. Запускается вручную после того, как человек проверил черновик задачи 1.
+# Сейчас только готовит задания агенту (режим dry-run) на придуманных данных: ключ доступа к агенту
+# в репозиторий не добавлен. Что нужно для настоящего запуска, написано в README, раздел "Задачи в CI".
+name: 2. Работа агента
+
+on:
+  workflow_dispatch:
+    inputs:
+      dataset:
+        description: 'Набор данных (папка с данными в репозитории)'
+        required: true
+        default: 'tests/data/demo'
+      approved:
+        description: 'Я проверил черновик задачи 1 и согласен с решениями'
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  agent:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Stop if the draft is not approved
+        if: ${{ !inputs.approved }}
+        run: |
+          echo "Черновик не одобрен: отметьте галочку при запуске." >> "$GITHUB_STEP_SUMMARY"
+          exit 1
+
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version-file: '.python-version'
+
+      - name: Collect changes (same result as task 1)
+        env:
+          DATASET: ${{ inputs.dataset }}
+        run: python -m pipeline collect "$DATASET" --out output/run
+
+      - name: Prepare agent tasks
+        env:
+          DATASET: ${{ inputs.dataset }}
+        run: python -m pipeline agent "$DATASET" --out output/run --approve --dry-run
+
+      - name: Show the summary
+        run: cat output/run/agent/summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: agent-tasks
+          path: output/run/agent/
+          if-no-files-found: error

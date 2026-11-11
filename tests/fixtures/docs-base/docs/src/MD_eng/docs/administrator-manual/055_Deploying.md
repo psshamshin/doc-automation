@@ -1,5 +1,0 @@
-# Deploying
-
-```
-DEMO_UI_VER = 1.0.0
-```
