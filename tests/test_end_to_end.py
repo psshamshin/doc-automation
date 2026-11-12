@@ -310,7 +310,8 @@ class AgentTest(unittest.TestCase):
                  ("foreign_step", "открыт файл вне источников задачи"),
                  ("fake_term", "названия «Несуществующая кнопка» нет"), ("big_edit", "правка слишком большая"),
                  ("bad_find", "фрагмента find нет на странице"), ("wrong_page", "страница не входит в страницы задания"),
-                 ("comment", "в новом тексте комментарий"), ("no_rules", "не прочитал"))
+                 ("comment", "в новом тексте комментарий"), ("shot", "метки скриншотов не ставятся"),
+                 ("no_rules", "не прочитал"))
         for mode, msg in cases:
             with self.assertRaises(SystemExit) as cm:
                 run("agent", self.out, "--cmd", f"{STUB} {mode}", "--redo")
@@ -324,6 +325,15 @@ class AgentTest(unittest.TestCase):
         s = self.summary()
         self.assertIn("**Нужно переделать**", s)
         self.assertIn("Что не подтверждено:", s)
+
+    def test_screenshots_list_is_built_by_code_after_agent_edits(self):
+        self.approve(**{"NOTASK:0.10.0#7": 1})
+        run("agent", self.out, "--cmd", STUB)
+        shots = (self.out / P.OUT_RESULT / "screenshots.md").read_text(encoding="utf-8")
+        # заглушка изменила начало страницы заказов: ее скриншот попал в список без участия агента
+        self.assertIn("| rus | `user-manual/100_Orders.md`:", shots)
+        self.assertIn("`../Imgs/image001.png`", shots)
+        self.assertNotIn("SCREENSHOT-TODO", (self.out / P.OUT_RESULT / self.page).read_text(encoding="utf-8"))
 
     def test_direct_edit_of_docs_is_ignored_and_reported(self):
         self.approve(**{"NOTASK:0.10.0#7": 1})

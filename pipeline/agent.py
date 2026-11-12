@@ -548,6 +548,8 @@ def verify_answer(ds, u: Dict[str, Any], kind: str, answer: Dict[str, Any], docs
         if len(find) > MAX_FIND_CHARS or len(new.splitlines()) > MAX_EDIT_LINES:
             problems.append(f"{where}: правка слишком большая (не больше {MAX_EDIT_LINES} строк нового текста): раздели на несколько")
             continue
+        if "SCREENSHOT-TODO" in new and "SCREENSHOT-TODO" not in find:
+            problems.append(f"{where}: метки скриншотов не ставятся: скриншоты к проверке определяет код по измененным разделам")
         if "<!--" in new and "<!--" not in find:
             problems.append(f"{where}: в новом тексте комментарий: вопросы и пояснения пишутся в ответе, а не в документации")
         m = re.search(r"MD_(\w+)/", f)
@@ -564,28 +566,23 @@ def verify_answer(ds, u: Dict[str, Any], kind: str, answer: Dict[str, Any], docs
                                 "ни в записях задачи")
         check_list(e.get("evidence"), where)
         staged[f] = text.replace(find, new, 1)
-        ops.append({"file": f, "find": find, "replace": new, "what": e["what"],
-                    "screenshot": "SCREENSHOT-TODO" in new and "SCREENSHOT-TODO" not in find})
+        ops.append({"file": f, "find": find, "replace": new, "what": e["what"]})
     return {"problems": problems, "ops": ops, "staged": staged}
 
 
 def apply_ops(ds, docs: Docs, uid: str, verified: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Вносит проверенные правки в result/ и сам записывает их в trace.md и screenshots.md."""
+    """Вносит проверенные правки в result/ и сам записывает их в trace.md. Список скриншотов к проверке
+    код собирает отдельно, по измененным разделам (pipeline/checks.py)."""
     for f, text in verified["staged"].items():
         docs.put(f, text)
     docs.save()
     trace = ds.result_dir / "trace.md"
-    shots = ds.result_dir / "screenshots.md"
-    t_text, s_text = read_text(trace) or "", read_text(shots) or ""
+    t_text = read_text(trace) or ""
     for op in verified["ops"]:
         m = re.match(r"docs/MD_(\w+)/docs/(.+)$", op["file"])
         lang, page = (m.group(1), m.group(2)) if m else ("", op["file"])
         t_text += f"| {uid} | {lang} | {page} | {op['what'].replace('|', '/')} | агент, проверено кодом |\n"
-        if op["screenshot"]:
-            img = re.search(r"!\[[^\]]*\]\(([^)\s]+)", op["replace"])
-            s_text += f"| {page} | {img.group(1) if img else '-'} | переснять | {op['what'].replace('|', '/')} | {uid} | {lang} |\n"
     save_text(trace, t_text)
-    save_text(shots, s_text)
     return verified["ops"]
 
 
