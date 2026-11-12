@@ -183,6 +183,13 @@ class AgentTest(unittest.TestCase):
             self.assertIn(f"## Вид задания `{kind}`", rules)
         self.assertNotIn("{{", rules.replace("{{PRODUCT_NAME}}", ""))
         # общие правила лежат один раз в AGENTS.md, в задании только данные задачи
+        rn_task = (self.ws / "tasks" / "release_notes.md").read_text(encoding="utf-8")
+        accepted, waiting = rn_task.split("### Задачи, решение по которым принимаешь ты")
+        self.assertIn("- GUI-105:", accepted)
+        self.assertNotIn("GUI-103", accepted)
+        self.assertIn("- GUI-103", waiting)                 # задача, ожидающая решения агента, названа отдельно
+        self.assertIn("- NOTASK:0.10.0#7", waiting)
+        self.assertIn("Состав строк задает черновик", rn_task)
         self.assertIn("Вид задания: `write_doc`", task)
         self.assertNotIn("Правила работы с источниками", task)
         self.assertLess(len(task), len(rules))
