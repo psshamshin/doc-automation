@@ -96,11 +96,10 @@ def cmd_agent(ds: Dataset, args) -> None:
         log(f"замена кодом: [{r['lang']}] {r['file']}: «{r['old']}» -> «{r['new']}» ({r['unit']})")
     index = load_json(ds.data_dir / "06_docs_index.json")
 
-    def redraft(final):
-        DRAFT.write_release_notes(ds, us, final, conf, index)
-
-    res = AG.run(ds, us, conf, decided, dry_run=args.dry_run, cmd=args.cmd, redo=args.redo,
-                 timeout=args.timeout, on_decided=redraft)
+    # черновик release notes пересобирается по проверенным решениям; строки задач, ожидающих решения
+    # агента, входят в него с пометкой: агент проходит все задания за один раз
+    DRAFT.write_release_notes(ds, us, decided, conf, index)
+    res = AG.run(ds, us, conf, decided, dry_run=args.dry_run, cmd=args.cmd, redo=args.redo, timeout=args.timeout)
     save_text(ds.agent_dir / "summary.md", AG.summary_md(ds, res, decided))
     counts = {}
     for i in res["items"]:

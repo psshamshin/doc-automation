@@ -77,7 +77,7 @@ class CollectTest(unittest.TestCase):
         self.assertIn('- **[Раздел "Заказы"]**: Добавлен фильтр заказов по дате <!-- GUI-105, источник: список изменений -->', rn)
         self.assertIn("GUI-104", rn)
         self.assertIn("**Исправленные ошибки**", rn)
-        self.assertIn("Не решено, строки появятся после работы агента: NOTASK:0.10.0#7", rn)
+        self.assertIn("NOTASK:0.10.0#7, источник: список изменений, ожидает решения", rn)
         en = self.text(P.OUT_RESULT, "MD_eng", "docs", "release-notes", "020.md")
         self.assertIn('- **["Orders" section]**:', en)
         self.assertIn("TODO перевод", en)
@@ -194,13 +194,15 @@ class AgentTest(unittest.TestCase):
         q = self.items()
         self.assertTrue(all(i["status"] == "done" for i in q.values()), q)
         self.assertEqual(q["GUI-103__decide"]["decision"], "rn")
-        self.assertEqual(q["GUI-105__write_doc"]["log"], ["прочитал записи задачи"])
+        self.assertEqual(q["GUI-105__write_doc"]["log"], ["changelog: прочитал записи задачи"])
         final = json.loads((self.out / P.OUT_AGENT / "final_decisions.json").read_text(encoding="utf-8"))
         self.assertEqual((final["GUI-103"], final["NOTASK:0.10.0#7"]), ("rn", "skip"))
-        # решение агента попало в черновик release notes
+        # release notes приняты: комментариев нет, строка отброшенной задачи убрана, строка GUI-103 осталась
         rn = (self.out / P.OUT_RESULT / "MD_rus" / "docs" / "release-notes" / "020.md").read_text(encoding="utf-8")
-        self.assertIn("<!-- GUI-103", rn)
-        self.assertNotIn("Не решено", rn)
+        self.assertNotIn("<!--", rn)
+        self.assertNotIn("Обновлены зависимости сборки", rn)
+        self.assertIn("**Исправленные ошибки**", rn)
+        self.assertEqual(sum(1 for l in rn.splitlines() if l.startswith("- **[")), 4)
         # подтвержденная правка перенесена в result/
         self.assertIn("Правка заглушки GUI-105__write_doc.", (self.out / P.OUT_RESULT / self.page).read_text(encoding="utf-8"))
         self.assertIn("| GUI-105__write_doc | rus |", (self.out / P.OUT_RESULT / "trace.md").read_text(encoding="utf-8"))
@@ -219,7 +221,9 @@ class AgentTest(unittest.TestCase):
     def test_unverified_answers_are_not_accepted(self):
         self.approve(**{"NOTASK:0.10.0#7": 1})
         for mode, msg in (("no_evidence", "нет подтверждения"), ("fake_quote", "цитаты нет в источнике changelog"),
-                          ("foreign_source", "источник не входит в разрешенные")):
+                          ("foreign_source", "источник не входит в разрешенные"), ("no_steps", "нет списка steps"),
+                          ("foreign_step", "открыт файл вне источников задачи"),
+                          ("fake_term", "названия «Несуществующая кнопка» нет"), ("big_edit", "Правка не минимальная")):
             with self.assertRaises(SystemExit) as cm:
                 run("agent", self.out, "--cmd", f"{STUB} {mode}", "--redo")
             self.assertEqual(cm.exception.code, 1)
@@ -242,6 +246,16 @@ class AgentTest(unittest.TestCase):
         self.assertEqual(item["status"], "unverified")
         self.assertIn("не прочитал", item["note"])
         self.assertNotIn("Правка заглушки", (self.out / P.OUT_RESULT / self.page).read_text(encoding="utf-8"))
+
+    def test_release_notes_with_extra_line_are_not_accepted(self):
+        self.approve(**{"NOTASK:0.10.0#7": 1})
+        with self.assertRaises(SystemExit):
+            run("agent", self.out, "--cmd", f"{STUB} rn_extra")
+        item = self.items()["release_notes"]
+        self.assertEqual(item["status"], "unverified")
+        self.assertTrue(any("строк в release notes: 5, должно быть: 4" in p for p in item["problems"]), item["problems"])
+        rn = (self.out / P.OUT_RESULT / "MD_rus" / "docs" / "release-notes" / "020.md").read_text(encoding="utf-8")
+        self.assertNotIn("Выдуманная строка", rn)
 
     def test_unverified_decision_is_not_applied(self):
         self.approve(**{"GUI-103": 2})
@@ -398,7 +412,7 @@ class ManualAgentTest(unittest.TestCase):
     def answer(self, evidence):
         (self.answers / "NOTASK_0.10.0_7__decide.json").write_text(json.dumps(
             {"item": "NOTASK_0.10.0_7__decide", "rules": self.code, "status": "done", "summary": "сборка, пользователю не видно",
-             "decision": "skip", "log": ["прочитал запись"], "evidence": evidence}, ensure_ascii=False), encoding="utf-8")
+             "decision": "skip", "steps": [{"source": "changelog", "found": "запись про сборку"}], "evidence": evidence}, ensure_ascii=False), encoding="utf-8")
 
     def state(self):
         q = json.loads((self.out / P.OUT_AGENT / "queue.json").read_text(encoding="utf-8"))

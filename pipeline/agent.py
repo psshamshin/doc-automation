@@ -16,9 +16,11 @@
 
 from __future__ import annotations
 
+import difflib
 import hashlib
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -26,6 +28,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from . import docs as DOCS
+from . import draft as DRAFT
 from . import product as P
 from . import validation as V
 from .common import ROOT, load_json, log, read_text, save_json, save_text
@@ -72,11 +75,13 @@ def kinds_for(decision: str, unit: Dict[str, Any]) -> List[str]:
 
 
 def build_queue(units: List[Dict[str, Any]], decisions: Dict[str, str], only_kinds: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+    """Все задания одним списком: агент проходит их за один раз. Задание decide включает и правку,
+    если агент решил, что она нужна, поэтому второго круга заданий нет."""
     items = []
     for u in units:
         for k in kinds_for(decisions.get(u["id"], "skip"), u):
             items.append({"id": f"{unit_dir(u['id'])}__{k}", "unit": u["id"], "kind": k})
-    if any(decisions.get(u["id"]) in ("doc", "rn", "langs") for u in units):
+    if any(decisions.get(u["id"]) in ("doc", "rn", "langs", "agent") for u in units):
         items.append({"id": "release_notes", "unit": None, "kind": "release_notes"})
     if only_kinds:
         items = [i for i in items if i["kind"] in only_kinds]
@@ -242,11 +247,21 @@ def verify_evidence(ds, u: Dict[str, Any], kind: str, answer: Dict[str, Any]) ->
         for n, ev in enumerate(evs, 1):
             check(ev, f"{where}, подтверждение {n}")
 
+    steps = answer.get("steps")
+    if not isinstance(steps, list) or not steps:
+        problems.append("шаги: нет списка steps - что открыл и что там нашел")
+    else:
+        for n, st in enumerate(steps, 1):
+            src = str(st.get("source", "")).strip("`") if isinstance(st, dict) else ""
+            if not src or not st.get("found"):
+                problems.append(f"шаг {n}: нужны поля source и found")
+            elif src not in VIRTUAL_SOURCES and src not in sources and src not in pages:
+                problems.append(f"шаг {n}: открыт файл вне источников задачи: {src}")
     if kind == "decide":
         check_list(answer.get("evidence"), "решение")
     edits = answer.get("edits")
     changed = answer.get("files_changed") or []
-    if kind in ("write_doc", "check_doc", "check_langs") and (changed or edits):
+    if kind in ("decide", "write_doc", "check_doc", "check_langs") and (changed or edits):
         if not isinstance(edits, list) or not edits:
             problems.append("правки: файлы изменены, но нет списка edits с подтверждением каждой правки")
         else:
@@ -255,6 +270,108 @@ def verify_evidence(ds, u: Dict[str, Any], kind: str, answer: Dict[str, Any]) ->
                     problems.append(f"правка {n}: нужны поля file и what")
                     continue
                 check_list(e.get("evidence"), f"правка {n} ({e['file']})")
+            problems += verify_pages(ds, u, answer, pages)
+    return problems
+
+
+QUOTED_RE = re.compile(r"«([^»\n]{2,80})»|\"([^\"\n]{2,80})\"|“([^”\n]{2,80})”")
+LINES_PER_EDIT = 12
+
+
+def _ui_vocabulary(ds) -> Dict[str, set]:
+    """Все тексты интерфейса новой версии по языкам документации (кэшируется на время запуска)."""
+    if not hasattr(ds, "_vocab"):
+        lang_of = ds.rules["i18n"]["doc_lang_of_locale"]
+        vocab: Dict[str, set] = {lang: set() for lang in lang_of.values()}
+        rows = load_json(ds.data_dir / "03_i18n_rows.json")["new"]
+        for r in rows:
+            lang = lang_of.get(r["locale"])
+            if lang:
+                vocab[lang].add(_norm(r["value"]))
+        ds._vocab = vocab
+    return ds._vocab
+
+
+def verify_pages(ds, u: Dict[str, Any], answer: Dict[str, Any], pages: Dict[str, Path]) -> List[str]:
+    """Сверяет сами правки с реальными данными: размер правки и названия элементов интерфейса.
+
+    * Правка минимальная: на одну заявленную правку не больше LINES_PER_EDIT измененных строк.
+    * Каждое новое название в кавычках должно существовать: в текстах интерфейса этого языка,
+      в прежнем тексте страницы или в записях задачи. Выдуманное название - нарушение.
+    """
+    problems: List[str] = []
+    w = workspace(ds)
+    known = " \n ".join(_virtual_text(u, k) for k in VIRTUAL_SOURCES)
+    edits_per_file: Dict[str, int] = {}
+    for e in answer.get("edits") or []:
+        if isinstance(e, dict) and e.get("file"):
+            f = str(e["file"]).strip("`")
+            edits_per_file[f] = edits_per_file.get(f, 0) + 1
+    for f, n_edits in sorted(edits_per_file.items()):
+        if f in LOG_FILES or f not in pages:
+            continue
+        old = (read_text(pages[f]) or "").splitlines()
+        new_text = read_text(w / f)
+        if new_text is None:
+            problems.append(f"{f}: файл назван измененным, но его нет")
+            continue
+        new = new_text.splitlines()
+        diff = [d for d in difflib.ndiff(old, new) if d[:2] in ("+ ", "- ")]
+        added = [d[2:] for d in diff if d.startswith("+ ")]
+        if not diff:
+            problems.append(f"{f}: правка заявлена, но файл не изменен")
+            continue
+        if len(diff) > LINES_PER_EDIT * n_edits:
+            problems.append(f"{f}: изменено строк: {len(diff)}, заявлено правок: {n_edits}. Правка не минимальная "
+                            "или не все правки названы")
+        m = re.search(r"MD_(\w+)/", f)
+        vocab = _ui_vocabulary(ds).get(m.group(1) if m else "", set())
+        old_text = _norm("\n".join(old))
+        for line in added:
+            if line.startswith("!!!") or line.startswith("    "):
+                continue                      # метка скриншота
+            for t in QUOTED_RE.findall(line):
+                term = _norm(next(x for x in t if x))
+                if term in vocab or term in old_text or term in _norm(known):
+                    continue
+                problems.append(f"{f}: названия «{term}» нет ни в текстах интерфейса, ни на странице, ни в записях задачи")
+    return problems
+
+
+def verify_release_notes(ds, final: Dict[str, str]) -> List[str]:
+    """Агент обязан переформулировать черновик, не меняя его состав: те же строки, та же таблица версий."""
+    problems: List[str] = []
+    w = workspace(ds)
+    counts = {}
+    for lang in ds.langs:
+        rel = Path(f"MD_{lang}") / "docs" / P.RELEASE_NOTES_DIR / ds.versions["release_notes_file"]
+        draft, new = read_text(ds.result_dir / rel), read_text(w / "docs" / rel)
+        if draft is None or DRAFT.DRAFT_MARK not in draft:
+            continue                              # черновика уже нет: текст принят раньше
+        if new is None:
+            problems.append(f"[{lang}] файла release notes нет")
+            continue
+        if DRAFT.DRAFT_MARK in new or "<!--" in new:
+            problems.append(f"[{lang}] в файле остались служебные комментарии или метка черновика")
+        expected = 0
+        for line in draft.splitlines():
+            if not line.startswith("- **["):
+                continue
+            m = re.search(r"<!-- (\S+?),", line)
+            uid = m.group(1) if m else None
+            if DRAFT.PENDING_NOTE in line and final.get(uid) not in ("doc", "rn", "langs"):
+                continue                          # задача отброшена: строки быть не должно
+            expected += 1
+        got = sum(1 for line in new.splitlines() if line.startswith("- **["))
+        counts[lang] = got
+        if got != expected:
+            problems.append(f"[{lang}] строк в release notes: {got}, должно быть: {expected} (по одной на принятую задачу)")
+        if [l for l in draft.splitlines() if l.startswith("|")] != [l for l in new.splitlines() if l.startswith("|")]:
+            problems.append(f"[{lang}] изменена таблица версий компонентов")
+        if [l for l in draft.splitlines() if l.startswith("# ")] != [l for l in new.splitlines() if l.startswith("# ")]:
+            problems.append(f"[{lang}] изменен заголовок с версией и датой")
+    if len(set(counts.values())) > 1:
+        problems.append(f"в языках разное число строк: {counts}")
     return problems
 
 
@@ -409,8 +526,8 @@ def run_cmd(ds, item: Dict[str, Any], prompt: str, cmd: List[str], timeout: int)
 
 
 def run(ds, units: List[Dict[str, Any]], conf: Dict[str, Any], decisions: Dict[str, str], *, dry_run: bool,
-        cmd: Optional[str], redo: bool, timeout: int, on_decided=None) -> Dict[str, Any]:
-    """Сначала задания decide; их подтвержденные ответы дополняют решения, по ним строится остаток очереди."""
+        cmd: Optional[str], redo: bool, timeout: int) -> Dict[str, Any]:
+    """Все задания готовятся сразу. Подтвержденные ответы decide дополняют решения человека."""
     by_id = {u["id"]: u for u in units}
     command = agent_cmd(cmd)
     launch = bool(command) and not dry_run
@@ -419,8 +536,17 @@ def run(ds, units: List[Dict[str, Any]], conf: Dict[str, Any], decisions: Dict[s
     results: Dict[str, Dict[str, Any]] = {}
     errors: Dict[str, str] = {}
 
+    qpath = ds.agent_dir / "queue.json"
+    prev = {i["id"]: i for i in (load_json(qpath)["items"] if qpath.is_file() else [])}
+
     def check(item) -> Dict[str, Any]:
-        r = check_answer(w / "answers" / f"{item['id']}.json", item, ds, by_id.get(item["unit"]) if item["unit"] else None)
+        path = w / "answers" / f"{item['id']}.json"
+        old = prev.get(item["id"], {})
+        if path.is_file() and old.get("status") in STATUSES and old.get("answer_sha") == _digest(path):
+            # ответ уже проверен и принят в прошлый запуск: его правки перенесены, повторно не сверяются
+            r = {"ok": True, "answer": json.loads(read_text(path) or "{}"), "kept": True}
+        else:
+            r = check_answer(path, item, ds, by_id.get(item["unit"]) if item["unit"] else None)
         results[item["id"]] = r
         return r
 
@@ -456,10 +582,18 @@ def run(ds, units: List[Dict[str, Any]], conf: Dict[str, Any], decisions: Dict[s
         allowed = {i["id"]: (unit_pages(ds, by_id[i["unit"]]) if i["unit"] else rn_files) for i in all_items}
         return accept_edits(ds, results, allowed)
 
-    process(build_queue(units, decisions, only_kinds=["decide"]))
-    if on_decided:
-        on_decided(final)
-    process([i for i in build_queue(units, final) if i["kind"] != "decide"])
+    process(build_queue(units, decisions))
+    # release notes проверяются по итоговым решениям: строки отброшенных задач должны быть убраны
+    rn_item = next((i for i in all_items if i["kind"] == "release_notes"), None)
+    if rn_item and results[rn_item["id"]]["ok"] and not results[rn_item["id"]].get("kept") \
+            and results[rn_item["id"]]["answer"]["status"] == "done":
+        left = [i["id"] for i in all_items if i["kind"] == "decide" and not results[i["id"]]["ok"]]
+        probs = ([f"не завершены задания, от которых зависит состав строк: {', '.join(left)}"] if left
+                 else verify_release_notes(ds, final))
+        if probs:
+            results[rn_item["id"]] = {"ok": False, "unverified": True, "problems": probs,
+                                      "answer": results[rn_item["id"]]["answer"],
+                                      "error": "не подтверждено: " + "; ".join(probs[:4])}
 
     sync = sync_now()
     for e in earlier:
@@ -480,9 +614,11 @@ def run(ds, units: List[Dict[str, Any]], conf: Dict[str, Any], decisions: Dict[s
             item.update(status="unverified", note=r["error"])
         else:
             item.update(status="failed", note=r["error"])
+        apath = w / "answers" / f"{item['id']}.json"
+        item["answer_sha"] = _digest(apath) if apath.is_file() else None
         item["decision"] = a.get("decision") if item["kind"] == "decide" and r["ok"] else None
         item["problems"] = r.get("problems", [])
-        item["log"] = [str(x) for x in (a.get("log") or [])][:20]
+        item["log"] = [f"{st.get('source')}: {st.get('found')}" for st in (a.get("steps") or []) if isinstance(st, dict)][:30]
         item["declared_files"] = _declared_files(a)
         item["questions"] = [str(x) for x in (a.get("questions") or [])]
     save_json(ds.agent_dir / "queue.json", {"command": command, "launched": launch, "items": all_items, **sync})
@@ -524,7 +660,7 @@ def summary_md(ds, res: Dict[str, Any], decisions: Dict[str, str]) -> str:
         if i["questions"]:
             L += ["Вопросы агента:", ""] + [f"- {q}" for q in i["questions"]] + [""]
         if i["log"]:
-            L += ["Ход работы (со слов агента):", ""] + [f"- {x}" for x in i["log"]] + [""]
+            L += ["Шаги агента (источник: что нашел):", ""] + [f"- {x}" for x in i["log"]] + [""]
         if i["declared_files"]:
             L += ["Файлы, которые агент назвал измененными: " + ", ".join(f"`{f}`" for f in i["declared_files"]), ""]
     changed = {k: v for k, v in res["final"].items() if decisions.get(k) != v}

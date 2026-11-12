@@ -50,13 +50,16 @@ def rn_source(unit: Dict[str, Any]) -> Dict[str, Any]:
     return {"source": "список изменений", "texts": significant_texts(unit) or [e["text"].strip() for e in unit["entries"]]}
 
 
+PENDING_NOTE = "ожидает решения: оставить строку, только если по задаче решено doc, rn или langs"
+
+
 def rn_block(unit: Dict[str, Any], titles: Dict[str, str], lang: str, flagged: bool, decision: str = "") -> List[str]:
     if decision == "langs":
         return [f"- **[{P.RN_TITLES[lang]['general']}]**: Изменен набор языков интерфейса. "
                 f"<!-- {unit['id']}, какие языки добавлены, уточнит агент -->", ""]
     src = rn_source(unit)
     texts = src["texts"]
-    note = f"<!-- {unit['id']}, источник: {src['source']}" + (", решение не подтверждено" if flagged else "") \
+    note = f"<!-- {unit['id']}, источник: {src['source']}" + (f", {PENDING_NOTE}" if decision == "agent" else "") \
            + (", TODO перевод" if lang != "rus" else "") + " -->"
     label = section_label(unit, titles, lang)
     if len(texts) == 1:
@@ -214,17 +217,19 @@ def write_release_notes(ds, units: List[Dict[str, Any]], decisions: Dict[str, st
         if table:
             L += [comp_title or "", "", *table, "",
                   f"<!-- Версия {P.UI_COMPONENT} подставлена кодом. Остальные версии взяты из прошлого релиза: проверить. -->", ""]
-        changes = [u for u in units if decisions.get(u["id"]) in ("doc", "langs")]
-        fixes = [u for u in units if decisions.get(u["id"]) == "rn"]
-        pending = [u["id"] for u in units if decisions.get(u["id"]) == "agent"]
+        # задачи, ожидающие решения агента, входят в черновик с пометкой: агент проходит черновик один раз
+        def is_fix(u):
+            return u["decision"]["action"]["value"] == "rn_and_check_doc"
+        waiting = [u for u in units if decisions.get(u["id"]) == "agent"]
+        changes = [u for u in units if decisions.get(u["id"]) in ("doc", "langs")] + [u for u in waiting if not is_fix(u)]
+        fixes = [u for u in units if decisions.get(u["id"]) == "rn"] + [u for u in waiting if is_fix(u)]
+        pending = [u["id"] for u in waiting]
         for title, group in ((T["changes"], changes), (T["fixes"], fixes)):
             if not group:
                 continue
             L += [f"**{title}**", ""]
             for u in group:
                 L += rn_block(u, titles, lang, conf[u["id"]]["level"] == "low", decisions.get(u["id"], ""))
-        if pending:
-            L += ["<!-- Не решено, строки появятся после работы агента: " + ", ".join(pending) + " -->", ""]
         if prev and "\\clearpage" in prev:
             L += ["", "\\clearpage", ""]
         save_text(target, "\n".join(L).rstrip("\n") + "\n")
