@@ -24,6 +24,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -39,11 +40,11 @@ from .common import ROOT, load_json, log, read_text, save_json, save_text
 PROMPTS = ROOT / "agent" / "prompts"
 KIND_ORDER = ["decide", "write_doc", "check_doc", "check_langs", "release_notes"]
 ANSWER_REQUIRED = ["item", "status", "summary"]
-STATUSES = ("done", "needs_human")
+STATUSES = ("done", "needs_human", "recheck")
+FINAL = ("done", "recheck")   # вывод сделан; recheck - агент сам просит второй круг
 NEED_EVIDENCE = ("decide", "write_doc", "check_doc", "check_langs")
 VIRTUAL_SOURCES = ("changelog", "i18n", "jira")
 LOG_FILES = ("docs/trace.md", "docs/screenshots.md")
-MAX_CODE_FILES = 80
 LANG_SETTINGS = ("apps/point/package.json", "apps/point/src/app/translations/i18n.ts")
 
 
@@ -90,19 +91,62 @@ def build_queue(units: List[Dict[str, Any]], decisions: Dict[str, str], only_kin
 
 # ---------------------------------------------------------------- источники задачи
 
+DIGEST_LINES_PER_FILE = 60
+DIGEST_LINES_TOTAL = 500
+DIGEST_ORDER = {"source": 0, "i18n": 1, "style": 3}
+DIGEST_SKIP = ("test", "build", "ci", "mocks", "changelog", "docs_internal", "types", "assets")
+
+
+def build_digest(ds, u: Dict[str, Any]) -> str:
+    """Сводка изменений задачи одним файлом: только добавленные и удаленные строки из патчей.
+
+    Агенту не нужно открывать десятки файлов: сначала он читает сводку. Строки взяты из патчей дословно,
+    поэтому на сводку можно ссылаться в подтверждениях.
+    """
+    data = ds.data_dir / "code"
+    rel = [f for f in u["files"] if f.get("relevant") and f.get("patch") and f["category"] not in DIGEST_SKIP]
+    rel.sort(key=lambda f: (DIGEST_ORDER.get(f["category"], 2), f["path"]))
+    L = [f"# Изменения кода по задаче {u['id']}", "",
+         "Только измененные строки: `+` добавлено, `-` удалено. Сначала код приложения, затем тексты интерфейса, "
+         "затем стили. Файлы тестов и сборки не показаны.", ""]
+    total, shown = 0, 0
+    for f in rel:
+        if total >= DIGEST_LINES_TOTAL:
+            break
+        lines = [x for x in (read_text(data / f["patch"]) or "").splitlines()
+                 if x.startswith("@@") or ((x.startswith("+") or x.startswith("-")) and not x.startswith(("+++", "---")))]
+        cut = lines[:min(DIGEST_LINES_PER_FILE, DIGEST_LINES_TOTAL - total)]
+        note = "" if f["reachable_from_app"] else ", приложение POINT 2 этот файл не использует"
+        L += [f"## {f['path']} [{f['category']}, {f['status']}{note}]", "", "```diff", *cut, "```"]
+        if len(cut) < len(lines):
+            L.append(f"Показано строк: {len(cut)} из {len(lines)}. Полностью: `patches/{Path(f['patch']).name}`.")
+        L.append("")
+        total += len(cut)
+        shown += 1
+    if shown < len(rel):
+        L += [f"Не показано файлов: {len(rel) - shown} из {len(rel)}. Их патчи лежат в `patches/`.", ""]
+    if not rel:
+        L += ["У значимых записей этой задачи нет измененных файлов кода.", ""]
+    return "\n".join(L)
+
+
 def unit_sources(ds, u: Dict[str, Any], kind: str = "") -> Dict[str, Path]:
-    """Источники задачи: путь в рабочей папке агента -> настоящий файл. Только то, что привязано к задаче."""
+    """Источники задачи: путь в рабочей папке агента -> настоящий файл. Только то, что привязано к задаче.
+
+    Первым идет сводка изменений, затем отдельные патчи. Полные файлы кода не копируются: читать их долго,
+    а все изменения уже есть в патчах.
+    """
     out: Dict[str, Path] = {}
     base = f"sources/{unit_dir(u['id'])}"
     data = ds.data_dir / "code"
     new = ds.slot(P.SLOT_CODE_NEW)
-    rel = [f for f in u["files"] if f.get("relevant")]
-    for f in rel:
-        if f.get("patch"):
+    digest = ds.data_dir / "agent_digest" / f"{unit_dir(u['id'])}.md"
+    if not digest.is_file():
+        save_text(digest, build_digest(ds, u))
+    out[f"{base}/changes.md"] = digest
+    for f in u["files"]:
+        if f.get("relevant") and f.get("patch"):
             out[f"{base}/patches/{Path(f['patch']).name}"] = data / f["patch"]
-    for f in rel[:MAX_CODE_FILES]:
-        if (new / f["path"]).is_file() and not f.get("binary"):
-            out[f"{base}/code/{f['path']}"] = new / f["path"]
     if kind == "check_langs":
         for p in LANG_SETTINGS:
             if (new / p).is_file():
@@ -157,11 +201,40 @@ def _unit_context(ds, u: Dict[str, Any], conf: Dict[str, Any], kind: str) -> str
           "- `i18n` - тексты интерфейса этой задачи (выше)"]
     if j:
         L.append("- `jira` - название и описание задачи в Jira (выше)")
-    srcs = unit_sources(ds, u, kind)
-    L += [f"- `{s}`" for s in srcs]
-    if not srcs:
-        L.append("- файлов кода у значимых записей этой задачи нет")
+    srcs = list(unit_sources(ds, u, kind))
+    L.append(f"- `{srcs[0]}` - сводка всех изменений кода по задаче. Начни с нее: обычно ее достаточно")
+    extra = [x for x in srcs[1:] if "/patches/" not in x]
+    L += [f"- `{x}`" for x in extra]
+    n = len(srcs) - 1 - len(extra)
+    if n:
+        L.append(f"- `sources/{unit_dir(u['id'])}/patches/` - полные патчи по файлам ({n}). Открывай отдельный патч, "
+                 "только если в сводке строка обрезана или нужен контекст вокруг нее")
+    L += ["", "## Где искать на страницах", ""]
+    heads = _page_outline(ds, u)
+    L += heads or ["Оглавления страниц нет."]
+    first = (u.get("_round2") or {})
+    if first:
+        L += ["", "## Второй круг", "",
+              "Это повторный разбор задания. Проверь первый ответ заново по источникам: подтверди его или исправь. "
+              "Не опирайся на первый ответ как на источник.", "",
+              f"Почему нужен второй круг: {first.get('reason') or 'не указано'}", "",
+              "Первый ответ:", "", "```json", json.dumps(first.get("answer") or {}, ensure_ascii=False, indent=2)[:6000], "```"]
     return "\n".join(L)
+
+
+def _page_outline(ds, u: Dict[str, Any]) -> List[str]:
+    """Заголовки страниц задачи с номерами строк: агенту не нужно читать страницу целиком, чтобы найти раздел."""
+    index_path = ds.data_dir / "06_docs_index.json"
+    if not index_path.is_file():
+        return []
+    index = load_json(index_path)
+    pages = {c["doc"] for c in u["doc_candidates"]}
+    out = []
+    for f in index.get("rus", {}).get("files", []):
+        if f["path"] in pages:
+            heads = [f"строка {h['line']}: {h['text']}" for h in f["headings"] if h["level"] <= 3][:25]
+            out.append(f"- `docs/MD_rus/docs/{f['path']}` ({f['lines']} строк): " + "; ".join(heads))
+    return out
 
 
 def rules_text(ds) -> str:
@@ -394,9 +467,11 @@ def check_answer(path: Path, item: Dict[str, Any], ds=None, unit: Optional[Dict[
         return {"ok": False, "unverified": True, "answer": a,
                 "problems": ["в ответе нет кода общих правил: агент не прочитал AGENTS.md в своей папке"],
                 "error": "агент не прочитал общие правила (нет кода из AGENTS.md)"}
-    if item["kind"] == "decide" and a["status"] == "done" and a.get("decision") not in ("doc", "rn", "langs", "screens", "skip"):
+    if a["status"] == "recheck" and not str(a.get("recheck_reason") or "").strip():
+        return {"ok": False, "error": "для статуса recheck нужно поле recheck_reason: в чем сомнение", "answer": a}
+    if item["kind"] == "decide" and a["status"] in FINAL and a.get("decision") not in ("doc", "rn", "langs", "screens", "skip"):
         return {"ok": False, "error": "для задания decide нужно поле decision: doc, rn, langs, screens или skip", "answer": a}
-    if ds is not None and unit is not None and item["kind"] in NEED_EVIDENCE and a["status"] == "done":
+    if ds is not None and unit is not None and item["kind"] in NEED_EVIDENCE and a["status"] in FINAL:
         problems = verify_evidence(ds, unit, item["kind"], a)
         if problems:
             return {"ok": False, "unverified": True, "problems": problems, "answer": a,
@@ -448,6 +523,8 @@ def refresh_workspace(ds, items: List[Dict[str, Any]], prompts: Dict[str, str], 
             shutil.rmtree(w / sub)
     shutil.copytree(ds.result_dir, w / "docs", ignore=shutil.ignore_patterns(".DS_Store"))
     (w / "answers").mkdir(parents=True, exist_ok=True)
+    if not (w / "progress.md").exists():
+        save_text(w / "progress.md", "# Ход работы агента\n\nАгент дописывает сюда строку в начале и в конце каждого задания и на каждом шаге.\n\n")
     for item in items:
         save_text(w / "tasks" / f"{item['id']}.md", prompts[item["id"]])
         if item["unit"]:
@@ -526,15 +603,17 @@ def run_cmd(ds, item: Dict[str, Any], prompt: str, cmd: List[str], timeout: int)
 
 
 def run(ds, units: List[Dict[str, Any]], conf: Dict[str, Any], decisions: Dict[str, str], *, dry_run: bool,
-        cmd: Optional[str], redo: bool, timeout: int) -> Dict[str, Any]:
+        cmd: Optional[str], redo: bool, timeout: int, recheck: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     """Все задания готовятся сразу. Подтвержденные ответы decide дополняют решения человека."""
     by_id = {u["id"]: u for u in units}
     command = agent_cmd(cmd)
     launch = bool(command) and not dry_run
     w = workspace(ds)
     final = dict(decisions)
+    by_round2: Dict[str, Dict[str, Any]] = {}
     results: Dict[str, Dict[str, Any]] = {}
     errors: Dict[str, str] = {}
+    launched_seconds: Dict[str, int] = {}
 
     qpath = ds.agent_dir / "queue.json"
     prev = {i["id"]: i for i in (load_json(qpath)["items"] if qpath.is_file() else [])}
@@ -551,7 +630,8 @@ def run(ds, units: List[Dict[str, Any]], conf: Dict[str, Any], decisions: Dict[s
         return r
 
     def process(items: List[Dict[str, Any]]) -> None:
-        prompts = {i["id"]: render_task(ds, i, by_id, conf, final) for i in items}
+        prompts = {i["id"]: render_task(ds, i, {**by_id, **({i["unit"]: by_round2[i["id"]]} if i["id"] in by_round2 else {})},
+                                        conf, final) for i in items}
         if launch:
             earlier.append(sync_now())      # правки, сделанные до пересборки папки, не теряются
             refresh_workspace(ds, all_items + [i for i in items if i not in all_items], {**all_prompts, **prompts}, by_id)
@@ -566,11 +646,14 @@ def run(ds, units: List[Dict[str, Any]], conf: Dict[str, Any], decisions: Dict[s
                 log(f"агент: {item['id']} ({n}/{len(items)})")
                 if answer.exists():
                     answer.unlink()
+                t0 = time.time()
                 err = run_cmd(ds, item, prompts[item["id"]], command, timeout)
+                launched_seconds[item["id"]] = int(time.time() - t0)
+                log(f"агент: {item['id']} - {launched_seconds[item['id']]} с")
                 if err:
                     errors[item["id"]] = err
                 r = check(item)
-            if item["kind"] == "decide" and r["ok"] and r["answer"]["status"] == "done":
+            if item["kind"] == "decide" and r["ok"] and r["answer"]["status"] in FINAL:
                 final[item["unit"]] = r["answer"]["decision"]
 
     all_items: List[Dict[str, Any]] = []
@@ -582,11 +665,37 @@ def run(ds, units: List[Dict[str, Any]], conf: Dict[str, Any], decisions: Dict[s
         allowed = {i["id"]: (unit_pages(ds, by_id[i["unit"]]) if i["unit"] else rn_files) for i in all_items}
         return accept_edits(ds, results, allowed)
 
-    process(build_queue(units, decisions))
+    queue = build_queue(units, decisions)
+    # второй круг: задания, которые агент сам отметил в прошлый запуск, и те, что назвал человек (--recheck)
+    rpath = ds.agent_dir / "recheck.json"
+    wanted: Dict[str, str] = load_json(rpath) if rpath.is_file() else {}
+    for i in queue:
+        old = prev.get(i["id"], {})
+        if old.get("status") == "recheck":
+            wanted.setdefault(i["id"], "агент: " + (old.get("recheck_reason") or "сомнение не описано"))
+        for key, note in (recheck or {}).items():
+            if key in (i["id"], i["unit"]):
+                wanted[i["id"]] = "человек: " + (note or "проверить еще раз")
+    save_json(rpath, wanted)
+    round2 = []
+    for i in queue:
+        if i["id"] in wanted and i["unit"]:
+            first = w / "answers" / f"{i['id']}.json"
+            unit2 = dict(by_id[i["unit"]])
+            unit2["_round2"] = {"reason": wanted[i["id"]], "answer": json.loads(read_text(first) or "{}") if first.is_file() else {}}
+            by_round2[i["id"] + "__round2"] = unit2
+            round2.append({"id": i["id"] + "__round2", "unit": i["unit"], "kind": i["kind"], "round": 2, "first": i["id"]})
+    process(queue + round2)
+    for i in round2:                       # второй круг заменяет решение первого; третьего круга нет
+        r = results[i["id"]]
+        if r["ok"] and r["answer"]["status"] == "recheck":
+            r["answer"]["status"] = "needs_human"
+        if i["kind"] == "decide" and r["ok"] and r["answer"]["status"] == "done":
+            final[i["unit"]] = r["answer"]["decision"]
     # release notes проверяются по итоговым решениям: строки отброшенных задач должны быть убраны
     rn_item = next((i for i in all_items if i["kind"] == "release_notes"), None)
     if rn_item and results[rn_item["id"]]["ok"] and not results[rn_item["id"]].get("kept") \
-            and results[rn_item["id"]]["answer"]["status"] == "done":
+            and results[rn_item["id"]]["answer"]["status"] in FINAL:
         left = [i["id"] for i in all_items if i["kind"] == "decide" and not results[i["id"]]["ok"]]
         probs = ([f"не завершены задания, от которых зависит состав строк: {', '.join(left)}"] if left
                  else verify_release_notes(ds, final))
@@ -595,6 +704,20 @@ def run(ds, units: List[Dict[str, Any]], conf: Dict[str, Any], decisions: Dict[s
                                       "answer": results[rn_item["id"]]["answer"],
                                       "error": "не подтверждено: " + "; ".join(probs[:4])}
 
+    # время по заданиям: при ручном запуске оценивается по времени записи файлов ответов
+    timing: Dict[str, int] = {i: v for i, v in launched_seconds.items()}
+    if not launch:
+        start = (ds.agent_dir / "workspace_manifest.json").stat().st_mtime if (ds.agent_dir / "workspace_manifest.json").is_file() else None
+        done_at = sorted((p.stat().st_mtime, p.stem) for p in (w / "answers").glob("*.json"))
+        for t, name in done_at:
+            if start is not None and t >= start:
+                timing[name] = int(t - start)
+            start = t
+        for i in all_items:                 # для ответов, принятых раньше, время берется из прошлого журнала
+            if results[i["id"]].get("kept") and prev.get(i["id"], {}).get("seconds") is not None:
+                timing[i["id"]] = prev[i["id"]]["seconds"]
+    if (w / "progress.md").is_file():
+        shutil.copyfile(w / "progress.md", ds.agent_dir / "progress.md")
     sync = sync_now()
     for e in earlier:
         sync["accepted"] = e["accepted"] + sync["accepted"]
@@ -616,6 +739,8 @@ def run(ds, units: List[Dict[str, Any]], conf: Dict[str, Any], decisions: Dict[s
             item.update(status="failed", note=r["error"])
         apath = w / "answers" / f"{item['id']}.json"
         item["answer_sha"] = _digest(apath) if apath.is_file() else None
+        item["recheck_reason"] = str(a.get("recheck_reason") or "") if r["ok"] and a.get("status") == "recheck" else ""
+        item["seconds"] = timing.get(item["id"])
         item["decision"] = a.get("decision") if item["kind"] == "decide" and r["ok"] else None
         item["problems"] = r.get("problems", [])
         item["log"] = [f"{st.get('source')}: {st.get('found')}" for st in (a.get("steps") or []) if isinstance(st, dict)][:30]
@@ -631,7 +756,7 @@ def summary_md(ds, res: Dict[str, Any], decisions: Dict[str, str]) -> str:
     counts: Dict[str, int] = {}
     for i in res["items"]:
         counts[i["status"]] = counts.get(i["status"], 0) + 1
-    names = {"done": "принято", "needs_human": "нужен человек", "unverified": "не подтверждено",
+    names = {"done": "принято", "recheck": "принято, нужен второй круг", "needs_human": "нужен человек", "unverified": "не подтверждено",
              "failed": "ошибка", "prepared": "ждет агента"}
     L = [f"# Журнал работы агента: набор данных {ds.name}", "",
          "Состояние заданий: " + (", ".join(f"{names[k]} - {v}" for k, v in sorted(counts.items())) or "заданий нет") + ".", ""]
@@ -639,9 +764,19 @@ def summary_md(ds, res: Dict[str, Any], decisions: Dict[str, str]) -> str:
         L += [f"Агент запускается вручную. Откройте в редакторе только папку `{w}` и дайте агенту задания из "
               "`tasks/` по порядку из файла `AGENTS.md`. После этого запустите команду `agent` еще раз: она проверит "
               "ответы, перенесет принятые правки и обновит этот журнал.", ""]
-    L += ["| Задание | Состояние | Решение | Итог |", "| --- | --- | --- | --- |"]
+    total = sum(i.get("seconds") or 0 for i in res["items"])
+    if total:
+        L += [f"Время агента: {total // 60} мин {total % 60} с" + ("" if res["launched"] else " (оценка по времени записи ответов)")
+              + ". Ход работы по шагам: `agent/progress.md`.", ""]
+    again = [i for i in res["items"] if i["status"] == "recheck"]
+    if again:
+        L += ["**Агент просит второй круг** по заданиям: " + ", ".join(i["id"] for i in again)
+              + ". Проверьте их ниже и запустите команду `agent` еще раз: для них будут подготовлены задания второго круга.", ""]
+    L += ["| Задание | Состояние | Решение | Время | Итог |", "| --- | --- | --- | --- | --- |"]
     for i in res["items"]:
-        L.append(f"| {i['id']} | {names[i['status']]} | {i.get('decision') or '-'} | {(i.get('note') or '-').replace('|', '/')} |")
+        sec = i.get("seconds")
+        t = f"{sec // 60}:{sec % 60:02d}" if sec is not None else "-"
+        L.append(f"| {i['id']} | {names[i['status']]} | {i.get('decision') or '-'} | {t} | {(i.get('note') or '-').replace('|', '/')} |")
     if res["accepted"]:
         L += ["", "## Принятые правки", "", "Перенесены в `result/`.", ""]
         L += [f"- `{a['file']}`" + (f": {', '.join(a['by'])}" if a["by"] else "") for a in res["accepted"]]
@@ -650,11 +785,13 @@ def summary_md(ds, res: Dict[str, Any], decisions: Dict[str, str]) -> str:
               "В `result/` не перенесены. Копии лежат в `agent/rejected/`, в рабочей папке агента файлы возвращены "
               "к принятому состоянию.", ""]
         L += [f"- `{r['file']}`: {r['why']}" for r in res["rejected"]]
-    detail = [i for i in res["items"] if i["problems"] or i["log"] or i["questions"] or i["status"] == "failed"]
+    detail = [i for i in res["items"] if i["problems"] or i["log"] or i["questions"] or i["status"] in ("failed", "recheck")]
     if detail:
         L += ["", "## Подробности по заданиям", ""]
     for i in detail:
         L += [f"### {i['id']}: {names[i['status']]}", ""]
+        if i.get("recheck_reason"):
+            L += [f"Сомнение агента: {i['recheck_reason']}", ""]
         if i["problems"]:
             L += ["Что не подтверждено:", ""] + [f"- {p}" for p in i["problems"]] + [""]
         if i["questions"]:

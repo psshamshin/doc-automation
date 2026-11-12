@@ -8,6 +8,7 @@ foreign_source - ссылка на файл вне разрешенных;
 no_steps - нет журнала шагов; foreign_step - в шагах файл вне источников задачи;
 fake_term - в правке выдуманное название элемента интерфейса; big_edit - правка на много строк;
 rn_extra - в release notes добавлена лишняя строка;
+recheck - агент просит второй круг по заданиям первого круга;
 no_rules - агент не прочитал общие правила (нет кода из AGENTS.md);
 edit_other - кроме своей страницы молча правит чужую; wrong_page - называет измененной чужую страницу.
 """
@@ -46,9 +47,14 @@ data = {"item": item, "rules": "" if mode == "no_rules" else code, "status": "do
         "steps": [] if mode == "no_steps" else [{"source": "docs/TODO.md" if mode == "foreign_step" else "changelog",
                                                   "found": "прочитал записи задачи"}],
         "evidence": ev, "questions": []}
-if item.endswith("__decide"):
+with open("progress.md", "a", encoding="utf-8") as f:
+    f.write(f"НАЧАЛ {item}\nГОТОВО {item}: done - заглушка\n")
+if mode == "recheck" and not item.endswith("__round2") and item != "release_notes":
+    data["status"] = "recheck"
+    data["recheck_reason"] = "изменение можно понять двумя способами"
+if "__decide" in item:
     data["decision"] = "rn" if "GUI-103" in item else "skip"
-if item.endswith("__write_doc"):
+if "__write_doc" in item:
     pages = re.findall(r"^- `(docs/MD_[^`]+)`$", prompt, flags=re.M)
     page = pages[0]
     p = Path(page)

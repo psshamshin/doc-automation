@@ -156,7 +156,7 @@ class AgentTest(unittest.TestCase):
     def test_workspace_has_only_what_tasks_need(self):
         self.approve(**{"GUI-103": 2})
         run("agent", self.out)
-        self.assertEqual(sorted(p.name for p in self.ws.iterdir()), ["AGENTS.md", "answers", "docs", "sources", "tasks"])
+        self.assertEqual(sorted(p.name for p in self.ws.iterdir()), ["AGENTS.md", "answers", "docs", "progress.md", "sources", "tasks"])
         q = self.items()
         self.assertEqual(sorted(q), ["GUI-103__decide", "GUI-104__check_langs", "GUI-105__write_doc", "GUI-106__write_doc",
                                      "NOTASK_0.10.0_7__decide", "release_notes"])
@@ -164,14 +164,19 @@ class AgentTest(unittest.TestCase):
         names = {p.relative_to(self.ws).as_posix() for p in self.ws.rglob("*") if p.is_file()}
         self.assertFalse(any("TODO" in n or "RULES" in n or n.endswith(".py") or "reference" in n for n in names))
         # источники только своих задач; отброшенной GUI-101 и чужой point3-задачи GUI-102 нет
-        self.assertEqual(sorted(p.name for p in (self.ws / "sources").iterdir()), ["GUI-103", "GUI-104", "GUI-105", "GUI-106"])
+        self.assertEqual(sorted(p.name for p in (self.ws / "sources").iterdir()),
+                         ["GUI-103", "GUI-104", "GUI-105", "GUI-106", "NOTASK_0.10.0_7"])
         task = (self.ws / "tasks" / "GUI-105__write_doc.md").read_text(encoding="utf-8")
         self.assertIn("- `docs/MD_rus/docs/user-manual/100_Orders.md`", task)
-        self.assertIn("- `sources/GUI-105/patches/packages__monokit__features__orders-filter__i18n.ts.diff`", task)
+        self.assertIn("- `sources/GUI-105/changes.md` - сводка всех изменений кода по задаче", task)
+        self.assertIn("строка 1: Раздел \"Заказы\"", task)                    # заголовки страницы с номерами строк
+        digest = (self.ws / "sources" / "GUI-105" / "changes.md").read_text(encoding="utf-8")
+        self.assertIn("+export const ruRu = { status: 'Статус', reset: 'Сбросить', date: 'Дата заказа'", digest)
+        self.assertNotIn("orders.spec.js", digest)                              # тесты в сводку не идут
+        self.assertFalse((self.ws / "sources" / "GUI-105" / "code").exists())   # полные файлы кода не копируются
+        self.assertTrue((self.ws / "sources" / "GUI-105" / "patches").is_dir())
         self.assertNotIn("GUI-106", task)
         self.assertNotIn("{{ITEM}}", task)
-        for src in re.findall(r"^- `(sources/[^`]+)`$", task, flags=re.M):
-            self.assertTrue((self.ws / src).is_file(), src)
         rules = (self.ws / "AGENTS.md").read_text(encoding="utf-8")
         self.assertIn("1. `tasks/GUI-103__decide.md`", rules)
         for kind in ("decide", "write_doc", "check_doc", "check_langs", "release_notes"):
@@ -211,6 +216,42 @@ class AgentTest(unittest.TestCase):
         self.assertIn("## Принятые правки", s)
         self.assertIn("- GUI-103: строка в release notes", s)
         self.assertNotIn("Агент запускается вручную", s)
+
+    def test_progress_and_timing_are_in_the_journal(self):
+        self.approve()
+        run("agent", self.out, "--cmd", STUB)
+        progress = (self.out / P.OUT_AGENT / "progress.md").read_text(encoding="utf-8")
+        self.assertIn("НАЧАЛ GUI-105__write_doc", progress)
+        self.assertIn("ГОТОВО release_notes", progress)
+        self.assertTrue(all(isinstance(i["seconds"], int) for i in self.items().values()))
+        self.assertIn("| Задание | Состояние | Решение | Время | Итог |", self.summary())
+
+    def test_agent_asks_for_second_round(self):
+        self.approve(**{"NOTASK:0.10.0#7": 1})
+        run("agent", self.out, "--cmd", f"{STUB} recheck")          # не ошибка: правки приняты, но помечены
+        q = self.items()
+        self.assertEqual(q["GUI-105__write_doc"]["status"], "recheck")
+        self.assertEqual(q["GUI-105__write_doc"]["recheck_reason"], "изменение можно понять двумя способами")
+        self.assertIn("**Агент просит второй круг**", self.summary())
+        self.assertFalse(any("round2" in k for k in q))
+        # следующий запуск после проверки человеком готовит задания второго круга
+        run("agent", self.out, "--cmd", STUB)
+        q = self.items()
+        self.assertEqual(q["GUI-105__write_doc__round2"]["status"], "done")
+        task = (self.ws / "tasks" / "GUI-105__write_doc__round2.md").read_text(encoding="utf-8")
+        self.assertIn("## Второй круг", task)
+        self.assertIn("агент: изменение можно понять двумя способами", task)
+        self.assertIn('"recheck_reason"', task)                     # первый ответ приложен
+
+    def test_human_sends_task_to_second_round(self):
+        self.approve(**{"NOTASK:0.10.0#7": 1})
+        run("agent", self.out, "--cmd", STUB)
+        run("agent", self.out, "--cmd", STUB, "--recheck", "GUI-106", "--note", "порядок пунктов описан неверно")
+        q = self.items()
+        self.assertIn("GUI-106__write_doc__round2", q)
+        self.assertNotIn("GUI-105__write_doc__round2", q)
+        task = (self.ws / "tasks" / "GUI-106__write_doc__round2.md").read_text(encoding="utf-8")
+        self.assertIn("человек: порядок пунктов описан неверно", task)
 
     def test_second_run_does_not_call_agent_again(self):
         self.approve()

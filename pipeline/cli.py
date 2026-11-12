@@ -99,7 +99,9 @@ def cmd_agent(ds: Dataset, args) -> None:
     # черновик release notes пересобирается по проверенным решениям; строки задач, ожидающих решения
     # агента, входят в него с пометкой: агент проходит все задания за один раз
     DRAFT.write_release_notes(ds, us, decided, conf, index)
-    res = AG.run(ds, us, conf, decided, dry_run=args.dry_run, cmd=args.cmd, redo=args.redo, timeout=args.timeout)
+    recheck = {k.strip(): (args.note or "") for k in (args.recheck or "").split(",") if k.strip()}
+    res = AG.run(ds, us, conf, decided, dry_run=args.dry_run, cmd=args.cmd, redo=args.redo, timeout=args.timeout,
+                 recheck=recheck)
     save_text(ds.agent_dir / "summary.md", AG.summary_md(ds, res, decided))
     counts = {}
     for i in res["items"]:
@@ -165,6 +167,8 @@ def main(argv: Optional[List[str]] = None) -> None:
     ap.add_argument("--approve", action="store_true", help="agent: считать решения проверенными без отметки в review.md")
     ap.add_argument("--redo", action="store_true", help="agent: выполнить заново уже выполненные задания")
     ap.add_argument("--cmd", help="agent: команда запуска агента; текст задания подается ей на стандартный ввод")
+    ap.add_argument("--recheck", help="agent: отправить задачи на второй круг разбора, через запятую (GUI-4104,GUI-4057)")
+    ap.add_argument("--note", help="agent: что именно проверить на втором круге (вместе с --recheck)")
     ap.add_argument("--reference", help="compare: папка с документацией техписа, если ее нет во входных данных")
     ap.add_argument("--allow-reference", action="store_true",
                     help="agent: запустить, даже если документация техписа лежит в проекте (результат нельзя считать чистым)")
