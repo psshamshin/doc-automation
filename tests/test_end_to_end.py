@@ -393,6 +393,14 @@ class AgentTest(unittest.TestCase):
         self.assertNotIn("GUI-103", rn_path.read_text(encoding="utf-8"))          # строка убрана без повторного запроса
         self.assertIn("убраны строки задач, решение по которым изменилось: GUI-103", self.summary())
 
+    def test_task_without_release_note_line_needs_a_reason(self):
+        self.approve(**{"NOTASK:0.10.0#7": 1})
+        run("agent", self.out, "--cmd", f"{STUB} rn_no_line")
+        item = self.items()["release_notes"]
+        self.assertEqual(item["status"], "done", item["problems"])
+        self.assertIn("без строки по решению агента", item["applied"][0]["what"])
+        self.assertIn("пользователю не видно", item["applied"][0]["what"])
+
     def test_unverified_decision_is_not_applied(self):
         self.approve(**{"GUI-103": 2})
         with self.assertRaises(SystemExit):
@@ -578,6 +586,81 @@ class ManualAgentTest(unittest.TestCase):
         q, _ = self.state()
         self.assertEqual(q[item]["status"], "done", q[item]["problems"])
         self.assertIn("Фильтр «Дата заказа»", (self.out / P.OUT_RESULT / "MD_rus" / "docs" / "user-manual" / "100_Orders.md").read_text(encoding="utf-8"))
+
+    PAGE = "docs/MD_rus/docs/user-manual/100_Orders.md"
+    FIND = "Фильтр «Статус» отбирает заказы по статусу."
+
+    def entry_text(self):
+        task = (self.out / P.OUT_WORKSPACE / "tasks" / "GUI-105__write_doc.md").read_text(encoding="utf-8")
+        return re.search(r"^- \[значимая\] \[.*?\] (.+)$", task, flags=re.M).group(1)
+
+    def write_answer(self, evidence, status="done", **extra):
+        item = "GUI-105__write_doc"
+        data = {"item": item, "rules": self.code, "status": status, "summary": "ок",
+                "steps": [{"source": "changelog", "found": "запись"}],
+                "edits": [{"file": self.PAGE, "find": self.FIND, "replace": self.FIND[:-1] + " и по дате.", "what": "уточнение",
+                           "evidence": evidence}]}
+        data.update(extra)
+        (self.answers / f"{item}.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+    def test_tolerant_quotes_in_a_real_answer(self):
+        """Все эти формы агент использовал в настоящем прогоне: регистр, опечатка, цитата через служебную строку."""
+        entry = self.entry_text()
+        digest = (self.out / P.OUT_WORKSPACE / "sources" / "GUI-105" / "changes.md").read_text(encoding="utf-8")
+        head = next(l for l in digest.splitlines() if l.startswith("## "))
+        hunk = next(l for l in digest.splitlines() if l.startswith("@@"))
+        body = next(l for l in digest.splitlines() if l.startswith("+") and len(l) > 20)
+        typo = entry[:12] + "ы" + entry[12:]
+        self.write_answer([{"source": "changelog", "quote": entry.lower()},                         # другой регистр
+                           {"source": "sources/GUI-105/changes.md", "quote": f"{head}\n{hunk}\n{body[1:]}"},  # через ```diff
+                           {"source": "changelog", "quote": typo}])                                  # опечатка
+        run("agent", self.out, "--approve")
+        q = self.state()[0]["GUI-105__write_doc"]
+        self.assertEqual(q["status"], "done", q["problems"])
+        self.assertEqual(len(q["approx"]), 1)                       # приближенная цитата отмечена для человека
+        self.assertIn("Цитат принято с поправкой на опечатку: 1", (self.out / P.OUT_AGENT / "summary.md").read_text(encoding="utf-8"))
+
+    def test_invented_quote_is_still_rejected_despite_tolerance(self):
+        self.write_answer([{"source": "changelog",
+                            "quote": "Добавлена возможность экспорта заказов в таблицу формата Excel с настройкой столбцов"}])
+        with self.assertRaises(SystemExit):
+            run("agent", self.out, "--approve")
+        self.assertEqual(self.state()[0]["GUI-105__write_doc"]["status"], "unverified")
+
+    def test_answer_written_by_an_older_version_of_the_rules_is_accepted(self):
+        # правила обновились между запусками: код старой версии, выданный в этом прогоне, по-прежнему принимается
+        old = "R-00000000"
+        (self.out / P.OUT_AGENT / "rules_codes.json").write_text(json.dumps([old, self.code]), encoding="utf-8")
+        self.code = old
+        self.write_answer([{"source": "changelog", "quote": self.entry_text()}])
+        run("agent", self.out, "--approve")
+        self.assertEqual(self.state()[0]["GUI-105__write_doc"]["status"], "done")
+        self.code = "R-ffffffff"                                   # а неизвестный код не принимается
+        self.write_answer([{"source": "changelog", "quote": self.entry_text()}])
+        with self.assertRaises(SystemExit):
+            run("agent", self.out, "--approve", "--redo")
+
+    def test_release_notes_answer_needs_no_status(self):
+        (self.answers / "release_notes.json").write_text(json.dumps({
+            "item": "release_notes", "rules": self.code,
+            "lines": [{"task": "GUI-106", "section": "Общее", "ru": "Изменен порядок пунктов меню.", "en": "The menu order was changed."}]},
+            ensure_ascii=False), encoding="utf-8")
+        try:
+            run("agent", self.out, "--approve")
+        except SystemExit:
+            pass                                       # остальные задания еще не выполнены: состав строк неполный
+        item = self.state()[0]["release_notes"]
+        self.assertNotEqual(item["status"], "failed")  # раньше: "в ответе нет полей: status, summary"
+        self.assertFalse(any("нет полей" in str(item.get(k)) for k in ("note", "problems")), item)
+
+    def test_verified_edits_are_applied_even_when_task_needs_human(self):
+        # stale_names: часть правок сделана, по остальному агент спрашивает человека - сделанное не теряется
+        self.write_answer([{"source": "changelog", "quote": self.entry_text()}], status="needs_human",
+                          questions=["как называется кнопка?"])
+        run("agent", self.out, "--approve")
+        q = self.state()[0]["GUI-105__write_doc"]
+        self.assertEqual((q["status"], len(q["applied"])), ("needs_human", 1))
+        self.assertIn("и по дате.", (self.out / P.OUT_RESULT / "MD_rus" / "docs" / "user-manual" / "100_Orders.md").read_text(encoding="utf-8"))
 
     def test_digest_says_whether_point_app_uses_the_file(self):
         digest = (self.out / P.OUT_WORKSPACE / "sources" / "GUI-105" / "changes.md").read_text(encoding="utf-8")
