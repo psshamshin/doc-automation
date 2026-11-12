@@ -255,11 +255,17 @@ def render_task(ds, item: Dict[str, Any], units_by_id: Dict[str, Any], conf: Dic
         ctx = _unit_context(ds, units_by_id[item["unit"]], conf, item["kind"])
     else:
         rows = [f"- {uid}: {V.DECISION_TEXT[d]}" for uid, d in decisions.items() if d in ("doc", "rn", "langs")]
+        waiting = [f"- {uid}" for uid, d in decisions.items() if d == "agent"]
         rn = f"{P.RELEASE_NOTES_DIR}/{v['release_notes_file']}"
         prev = f"{P.RELEASE_NOTES_DIR}/{v['previous_release_notes_file']}"
         ctx = ("## Файлы\n\n" + "\n".join(f"- черновик: `docs/MD_{lang}/docs/{rn}`" for lang in ds.langs) + "\n"
                + "\n".join(f"- образец прошлого релиза: `docs/MD_{lang}/docs/{prev}`" for lang in ds.langs)
-               + "\n\n## Задачи, которые идут в release notes\n\n" + "\n".join(rows))
+               + "\n\n## Состав строк\n\nСостав строк задает черновик, а не этот список: список только поясняет, "
+                 "откуда какая строка.\n\n### Задачи с принятым решением: строка остается\n\n" + ("\n".join(rows) or "Нет.")
+               + "\n\n### Задачи, решение по которым принимаешь ты в заданиях `decide`\n\n"
+                 "В черновике у их строк стоит пометка «ожидает решения». Оставь строку, если в своем ответе по задаче "
+                 "ты решил `doc`, `rn` или `langs`. Удали строку, если решил `skip` или `screens` либо вернул "
+                 "`needs_human`. Спрашивать человека об этом не нужно.\n\n" + ("\n".join(waiting) or "Нет."))
     text = head.strip() + "\n\n" + ctx.strip() + "\n"
     for k, val in {"{{ITEM}}": item["id"], "{{KIND}}": item["kind"], "{{ANSWER_FILE}}": f"answers/{item['id']}.json"}.items():
         text = text.replace(k, val)
