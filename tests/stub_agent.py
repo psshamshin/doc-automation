@@ -10,7 +10,7 @@ foreign_source - ссылка на файл вне разрешенных; no_st
 foreign_step - в шагах файл вне источников задачи; fake_term - выдуманное название элемента интерфейса;
 big_edit - правка длиннее допустимого; bad_find - фрагмента нет на странице; wrong_page - правка чужой страницы;
 comment - в документацию пишется комментарий с вопросом; shot - агент ставит метку скриншота; direct - агент правит файл напрямую;
-rn_extra - в release notes лишняя задача; rn_two - две строки на задачу, вторая с выбранным разделом; rn_code - в формулировке имя из кода;
+rn_extra - в release notes лишняя задача; rn_no_line - последняя задача оставлена без строки с причиной; rn_two - две строки на задачу, вторая с выбранным разделом; rn_code - в формулировке имя из кода;
 recheck - агент просит второй круг; no_rules - агент не прочитал общие правила.
 """
 
@@ -87,6 +87,9 @@ if item == "release_notes":
         lines.append({"task": uid, "ru": ru, "en": f"Change for task {uid}."})
         if mode == "rn_two" and uid == "GUI-105":
             lines.append({"task": uid, "section": "Работа с системой", "ru": "Второе изменение по задаче.", "en": "Second change."})
+    if mode == "rn_no_line":
+        skipped = lines.pop()
+        data["no_line"] = [{"task": skipped["task"], "reason": "пользователю не видно"}]
     if mode == "rn_extra":
         lines.append({"task": "GUI-999", "ru": "Выдуманная строка.", "en": "Invented line."})
     data["lines"] = lines

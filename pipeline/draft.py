@@ -254,6 +254,9 @@ def write_release_notes(ds, units: List[Dict[str, Any]], decisions: Dict[str, st
         changes = [u for u in accepted if not is_fix_unit(u, decisions)] + [u for u in waiting if not is_fix(u)]
         fixes = [u for u in accepted if is_fix_unit(u, decisions)] + [u for u in waiting if is_fix(u)]
         pending = [u["id"] for u in waiting]
+        if final_lines is not None:                      # задачи без строки (по решению агента) в файл не идут
+            changes = [u for u in changes if u["id"] in final_lines]
+            fixes = [u for u in fixes if u["id"] in final_lines]
         for title, group in ((T["changes"], changes), (T["fixes"], fixes)):
             if not group:
                 continue

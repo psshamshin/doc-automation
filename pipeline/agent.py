@@ -333,6 +333,13 @@ def rules_text(ds) -> str:
     return (read_text(PROMPTS / "workspace_agents.md") or "").replace("{{RELEASE}}", ds.versions["release"])
 
 
+def known_rules_codes(ds) -> set:
+    """Коды правил, выданные агенту в этом прогоне. Правила могут обновиться между запусками; ответ, написанный по
+    прежней версии, не отклоняется: агент прочитал правила, которые лежали у него в папке."""
+    p = ds.agent_dir / "rules_codes.json"
+    return set(load_json(p)) | {rules_code(ds)} if p.is_file() else {rules_code(ds)}
+
+
 def rules_code(ds) -> str:
     """Код общих правил. Агент обязан повторить его в ответе: так видно, что правила он прочитал."""
     return "R-" + hashlib.sha256(rules_text(ds).replace("{{RULES_CODE}}", "").encode("utf-8")).hexdigest()[:8]
@@ -384,6 +391,45 @@ def _norm(text: str) -> str:
 def _norm_code(text: str) -> str:
     """Текст патча или сводки без знаков '+' и '-' в начале строк: агент цитирует код без них."""
     return _norm("\n".join(re.sub(r"^[+-](?![+-])", "", line) for line in (text or "").splitlines()))
+
+
+APPROX_RATIO = 0.96
+
+
+def _approx_in(nq: str, nt: str) -> bool:
+    """Цитата с опечаткой в одну-две буквы: ищется по трем коротким опорным кускам, затем сверяется целиком."""
+    n = len(nq)
+    if n < 40:
+        return False
+    anchors = {nq[i:i + 15]: i for i in (0, n // 2 - 7, n - 15)}
+    for a, pos in anchors.items():
+        start, seen = 0, 0
+        while seen < 20:
+            i = nt.find(a, start)
+            if i < 0:
+                break
+            win = nt[max(0, i - pos): max(0, i - pos) + n + 2]
+            if difflib.SequenceMatcher(None, nq, win, autojunk=False).ratio() >= APPROX_RATIO:
+                return True
+            start, seen = i + 1, seen + 1
+    return False
+
+
+def quote_found(quote: str, text: str, code: bool = False) -> str:
+    """Есть ли цитата в тексте. 'exact' - буква в букву (регистр не важен), 'lines' - каждая строка цитаты есть в
+    тексте (агент пропустил служебную строку между ними), 'approx' - различие в одну-две буквы, '' - нет.
+
+    Допуски нужны, чтобы не отклонять настоящие цитаты из-за регистра и опечатки; выдуманная фраза этих
+    проверок не проходит.
+    """
+    conv = _norm_code if code else _norm
+    nq, nt = conv(quote).lower(), conv(text).lower()
+    if nq in nt or _norm(quote).lower() in _norm(text).lower():
+        return "exact"
+    lines = [x for x in (conv(l).lower() for l in quote.splitlines()) if len(x) >= 3]
+    if len(lines) > 1 and all(x in nt for x in lines):
+        return "lines"
+    return "approx" if _approx_in(nq, nt) else ""
 
 
 def _own_files(item_id: str) -> tuple:
@@ -461,31 +507,39 @@ def verify_answer(ds, u: Dict[str, Any], kind: str, answer: Dict[str, Any], docs
     pages = unit_pages(ds, u)
     known = _norm(" \n ".join(_virtual_text(u, k) for k in VIRTUAL_SOURCES))
     # агент цитирует записи, тексты интерфейса и Jira в том виде, как они напечатаны в задании
-    printed = _norm(_unit_context(ds, u, conf or {}, kind))
+    printed = _unit_context(ds, u, conf or {}, kind)
+
+    approx: List[str] = []
+
+    def found(quote: str, text: str, code: bool = False) -> bool:
+        how = quote_found(quote, text, code)
+        if how == "approx":
+            approx.append(quote[:60])
+        return bool(how)
 
     def in_source(src: str, quote: str) -> Optional[bool]:
         """True - цитата есть; False - нет; None - источник не разрешен. Папка источников ищется целиком."""
         if src in VIRTUAL_SOURCES or src == "knowledge":
-            return (src != "knowledge" and quote in _norm(_virtual_text(u, src))) or quote in printed
+            return (src != "knowledge" and found(quote, _virtual_text(u, src))) or found(quote, printed)
         if src in sources:
-            text = read_text(sources[src]) or ""
-            return quote in _norm(text) or _norm_code(quote) in _norm_code(text)
+            return found(quote, read_text(sources[src]) or "", code=True)
         if src in pages:
-            return quote in _norm(read_text(docs.path(src)) or "")
+            return found(quote, read_text(docs.path(src)) or "")
         inside = [p for k, p in sources.items() if k.startswith(src.rstrip("/") + "/")]
         if inside:
-            return any(_norm_code(quote) in _norm_code(read_text(p) or "") for p in inside)
+            return any(found(quote, read_text(p) or "", code=True) for p in inside)
         return None
 
     def check_ev(ev: Any, where: str) -> None:
         if not isinstance(ev, dict) or not ev.get("source") or not ev.get("quote"):
             problems.append(f"{where}: подтверждение должно быть объектом с полями source и quote")
             return
-        src, quote = str(ev["source"]).strip("`"), _norm(str(ev["quote"]))
+        raw = str(ev["quote"])                      # переносы строк нужны проверке по строкам
+        src, quote = str(ev["source"]).strip("`"), _norm(raw)
         if len(quote) < 3:
             problems.append(f"{where}: цитата слишком короткая")
             return
-        found = in_source(src, quote)
+        found = in_source(src, raw)
         if found is None:
             problems.append(f"{where}: источник не входит в разрешенные для этой задачи: {src}")
         elif not found:
@@ -567,7 +621,7 @@ def verify_answer(ds, u: Dict[str, Any], kind: str, answer: Dict[str, Any], docs
         check_list(e.get("evidence"), where)
         staged[f] = text.replace(find, new, 1)
         ops.append({"file": f, "find": find, "replace": new, "what": e["what"]})
-    return {"problems": problems, "ops": ops, "staged": staged}
+    return {"problems": problems, "ops": ops, "staged": staged, "approx": approx}
 
 
 def apply_ops(ds, docs: Docs, uid: str, verified: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -617,13 +671,24 @@ def verify_rn(answer: Dict[str, Any], expected: List[str], sections: List[str], 
     for uid, rows in lines.items():
         if len(rows) > MAX_RN_LINES_PER_TASK:
             problems.append(f"{uid}: строк {len(rows)}, допускается не больше {MAX_RN_LINES_PER_TASK} на задачу")
-    missing = [u for u in expected if u not in lines]
+    # задачу можно оставить без строки, если агент объяснил почему (например, пользователю изменение не видно)
+    skipped: Dict[str, str] = {}
+    for n, x in enumerate(answer.get("no_line") or [], 1):
+        if not isinstance(x, dict) or not x.get("task") or not str(x.get("reason") or "").strip():
+            problems.append(f"no_line {n}: нужны поля task и reason")
+        else:
+            skipped[str(x["task"])] = str(x["reason"]).strip()
+    both = [u for u in skipped if u in lines]
+    if both:
+        problems.append("задача и со строкой, и в no_line: " + ", ".join(both))
+    missing = [u for u in expected if u not in lines and u not in skipped]
     extra = [u for u in lines if u not in expected]
     if missing:
         problems.append("нет строк для принятых задач: " + ", ".join(missing))
     if extra and not drop_extra:
         problems.append("даны строки для задач, которые в release notes не идут: " + ", ".join(extra))
-    return {"problems": problems, "lines": {u: r for u, r in lines.items() if u in expected}, "dropped": extra if drop_extra else []}
+    return {"problems": problems, "lines": {u: r for u, r in lines.items() if u in expected}, "dropped": extra if drop_extra else [],
+            "skipped": {u: why for u, why in skipped.items() if u in expected}}
 
 
 def check_answer(path: Path, item: Dict[str, Any], ds=None) -> Dict[str, Any]:
@@ -637,12 +702,15 @@ def check_answer(path: Path, item: Dict[str, Any], ds=None) -> Dict[str, Any]:
         return {"ok": False, "error": f"ответ не является JSON: {e}"}
     if not isinstance(a, dict):
         return {"ok": False, "error": "ответ должен быть объектом JSON"}
+    if item["kind"] == "release_notes":
+        a.setdefault("status", "done")                    # ответ - список строк: статус и итог не обязательны
+        a.setdefault("summary", "")
     miss = [k for k in ANSWER_REQUIRED if k not in a]
     if miss:
         return {"ok": False, "error": "в ответе нет полей: " + ", ".join(miss), "answer": a}
     if a["status"] not in STATUSES:
         return {"ok": False, "error": f"неизвестный status: {a['status']}", "answer": a}
-    if ds is not None and str(a.get("rules", "")).strip() != rules_code(ds):
+    if ds is not None and str(a.get("rules", "")).strip() not in known_rules_codes(ds):
         return {"ok": False, "unverified": True, "answer": a,
                 "problems": ["в ответе нет кода общих правил: агент не прочитал AGENTS.md в своей папке"],
                 "error": "агент не прочитал общие правила (нет кода из AGENTS.md)"}
@@ -699,6 +767,7 @@ def refresh_workspace(ds, items: List[Dict[str, Any]], prompts: Dict[str, str], 
     order = "\n".join(f"{n}. `tasks/{i['id']}.md`" for n, i in enumerate(items, 1)) or "Заданий нет."
     text = rules_text(ds).replace("{{RULES_CODE}}", rules_code(ds)).replace("{{TASKS}}", order)
     save_text(w / "AGENTS.md", text)
+    save_json(ds.agent_dir / "rules_codes.json", sorted(known_rules_codes(ds)))
 
 
 # ---------------------------------------------------------------- запуск
@@ -803,7 +872,7 @@ def run(ds, units: List[Dict[str, Any]], conf: Dict[str, Any], decisions: Dict[s
             item.update(status=old["status"], note=old.get("note", ""))
             if item["kind"] == "decide" and old.get("decision"):
                 item["decision"] = old["decision"]
-        elif r["ok"] and a["status"] == "needs_human":
+        elif r["ok"] and a["status"] == "needs_human" and not a.get("edits"):
             item.update(status="needs_human", note=str(a.get("summary", ""))[:300])
         elif r["ok"] and item["kind"] == "release_notes":
             item["rn_answer"] = True
@@ -817,8 +886,8 @@ def run(ds, units: List[Dict[str, Any]], conf: Dict[str, Any], decisions: Dict[s
             else:
                 ops = apply_ops(ds, docs, item["unit"], v)
                 item.update(status=a["status"], note=str(a.get("summary", ""))[:300],
-                            applied=[{"file": o["file"], "what": o["what"]} for o in ops])
-                if item["kind"] == "decide":
+                            applied=[{"file": o["file"], "what": o["what"]} for o in ops], approx=v.get("approx", []))
+                if item["kind"] == "decide" and a.get("decision"):
                     item["decision"] = a["decision"]
         elif r.get("missing"):
             item.update(status="failed" if item["id"] in errors else "prepared", note=errors.get(item["id"], "ответа нет"))
@@ -855,7 +924,9 @@ def run(ds, units: List[Dict[str, Any]], conf: Dict[str, Any], decisions: Dict[s
         else:
             DRAFT.write_release_notes(ds, units, final, conf, index, final_lines=v["lines"])
             n = sum(len(x) for x in v["lines"].values())
-            what = "файлы RU и EN собраны кодом" + (f"; убраны строки задач, решение по которым изменилось: {', '.join(v['dropped'])}"
+            what = "файлы RU и EN собраны кодом" + (
+                "; без строки по решению агента: " + "; ".join(f"{u} ({why[:80]})" for u, why in v["skipped"].items())
+                if v.get("skipped") else "") + (f"; убраны строки задач, решение по которым изменилось: {', '.join(v['dropped'])}"
                                                      if v.get("dropped") else "")
             item.update(problems=[], applied=[{"file": f"release notes: задач {len(v['lines'])}, строк {n}", "what": what}])
 
@@ -923,6 +994,9 @@ def summary_md(ds, res: Dict[str, Any], decisions: Dict[str, str]) -> str:
             L += [f"Сомнение агента: {i['recheck_reason']}", ""]
         if i["problems"]:
             L += ["Что не подтверждено:", ""] + [f"- {p}" for p in i["problems"]] + [""]
+        if i.get("approx"):
+            L += [f"Цитат принято с поправкой на опечатку: {len(i['approx'])} (проверьте глазами): "
+                  + "; ".join(f"«{x}»" for x in i["approx"][:3]), ""]
         if i.get("applied"):
             L += ["Внесено кодом:", ""] + [f"- `{a['file']}`: {a['what']}" for a in i["applied"]] + [""]
         if i["questions"]:
