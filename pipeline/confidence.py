@@ -1,12 +1,7 @@
-"""Достоверность решения правил по задаче (группа правил И, см. docs/RULES.md).
+"""Достоверность решения правил по задаче (группа И, docs/RULES.md).
 
-Правила всегда выдают какое-то решение. Достоверность решения низкая, если выполнен хотя бы один
-критерий вида decision: решение опирается на косвенные признаки или правила не сработали. Такая задача
-передается агенту на проверку. При высокой достоверности агент решение не пересматривает.
-
-Виды критериев:
-* decision - не подтверждено само решение (продукт, видимость);
-* place - решение подтверждено, но не определено место в документации: это замечание автору текста.
+Достоверность низкая, если решение опирается на косвенные признаки или правила не сработали: такую задачу
+проверяет агент. Критерий И9 только сообщает человеку, что в Jira задача отнесена к другому продукту.
 """
 
 from __future__ import annotations
@@ -16,10 +11,7 @@ from typing import Any, Dict, List
 
 # критерии группы И (docs/RULES.md)
 RULE_OF = {"product_unclear": "И1", "visibility_unclear": "И2", "text_only": "И3", "shared_strings": "И4",
-           "other_product_files": "И5", "class_default": "И6", "no_page": "И7", "many_pages": "И8",
-           "jira_other_product": "И9"}
-DOC_ACTIONS = ("doc_and_rn", "rn_and_check_doc", "rn_and_check_langs")
-MANY_PAGES = 3
+           "other_product_files": "И5", "jira_other_product": "И9"}
 
 
 def _evidence_keys(u: Dict[str, Any]) -> set:
@@ -81,14 +73,6 @@ def assess(units: List[Dict[str, Any]], rules: Dict[str, Any]) -> Dict[str, Dict
                 add("other_product_files", "decision",
                     f"{len(src) - len(used)} из {len(src)} файлов кода значимых записей приложение не использует",
                     "код не используется приложением")
-            if d["class_draft"]["why"].endswith("(по умолчанию)"):
-                add("class_default", "place", "вид изменения не определен, поставлен по умолчанию", "вид изменения по умолчанию")
-        if action in DOC_ACTIONS:
-            n = len(u["doc_candidates"])
-            if n == 0:
-                add("no_page", "place", "страница документации не найдена", "страница не найдена")
-            elif n > MANY_PAGES:
-                add("many_pages", "place", f"слишком много страниц-кандидатов: {n}", f"страниц-кандидатов: {n}")
 
         need_agent = any(f["kind"] == "decision" for f in flags)
         out[u["id"]] = {"level": "low" if need_agent else "high", "flags": flags}

@@ -21,7 +21,7 @@ jobs:
           python-version-file: '.python-version'
 
       - name: Compile
-        run: python -m py_compile pipeline/*.py tests/*.py
+        run: python -m py_compile pipeline/*.py pipeline/agent/*.py tests/*.py
 
       - name: Check JSON in knowledge
         run: |
@@ -42,5 +42,5 @@ jobs:
           name: demo-review
           path: |
             output/demo/review.md
-            output/demo/report.md
+            output/demo/checks.md
           if-no-files-found: error

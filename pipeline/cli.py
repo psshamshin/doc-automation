@@ -1,8 +1,8 @@
 """Команды пайплайна.
 
-    python3 -m pipeline collect <набор>    сбор изменений, отбор по правилам, черновик
-    python3 -m pipeline agent <набор>      агент: проверка решений с низкой достоверностью и текст (после проверки review.md)
-    python3 -m pipeline check <набор>      сквозные проверки документации (ссылки, языки, картинки)
+    python3 -m pipeline collect <набор>    сбор изменений, отбор по правилам, файл проверки review.md
+    python3 -m pipeline agent <набор>      агент: задания, проверка ответов, внесение правок (после проверки review.md)
+    python3 -m pipeline check <набор>      сквозные проверки документации (ссылки, языки, картинки, скриншоты)
     python3 -m pipeline compare <набор>    сравнение результата с документацией техписа
     python3 -m pipeline versions <набор>   показать, какие версии определились
     python3 -m pipeline learn <набор>      записать релизы из документации в базу знаний
@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import argparse
+import shutil
 import sys
 import time
 from typing import List, Optional
@@ -68,9 +69,11 @@ def cmd_check(ds: Dataset, args) -> None:
 def cmd_collect(ds: Dataset, args) -> None:
     if args.release:
         v = ds.versions
-        changed = R.remember(ds.knowledge_path, [{"release": v["release"], "ui": v["ui_new"], "date": v["release_date"]}])
-        for c in changed:
+        for c in R.remember(ds.knowledge_path, [{"release": v["release"], "ui": v["ui_new"], "date": v["release_date"]}]):
             log(f"база знаний: {c}")
+    if args.force:                           # результат пересоздается: прошлая работа агента к нему уже не относится
+        for d in (ds.agent_dir, AG.workspace(ds)):
+            shutil.rmtree(d, ignore_errors=True)
     RUN.step_collect(ds)
     RUN.step_classify(ds)
     RUN.step_docs_index(ds)
@@ -81,24 +84,19 @@ def cmd_collect(ds: Dataset, args) -> None:
     proposals = V.proposals(us, conf)
     index = load_json(ds.data_dir / "06_docs_index.json")
     bumps = DRAFT.bump_versions(ds, units["component_versions"])
-    rn = DRAFT.write_release_notes(ds, us, proposals, conf, index)
     jira = load_json(ds.data_dir / "04_jira.json")
-    renames = DRAFT.planned_renames(ds, us)
-    status = V.write(ds.run_dir / V.FILE_NAME, ds, us, conf, bumps, rn, len(jira), force=args.force,
-                     rn_lines=DRAFT.rn_preview(us, proposals, index), renames=renames,
-                     jira_extra=DRAFT.jira_extra(jira, us), stale=load_json(ds.data_dir / "05_stale_texts.json"),
-                     checks=run_doc_checks(ds, proposals))
-    status_text = {"created": "создан, ждет проверки", "kept": "ваши отметки сохранены",
-                   "updated": "обновлен: решения правил изменились, отметка «Проверено» снята"}[status]
+    status = V.write(ds.run_dir / V.FILE_NAME, ds, us, conf, bumps, len(jira), force=args.force,
+                     rn_lines=DRAFT.rn_preview(us, proposals, index), jira_extra=DRAFT.jira_extra(jira, us),
+                     stale=load_json(ds.data_dir / "05_stale_texts.json"), checks=run_doc_checks(ds, proposals))
     save_json(ds.data_dir / "07_review.json", {"versions": ds.versions, "proposals": proposals, "confidence": conf,
-                                              "code_edits": bumps, "release_notes": rn, "planned_renames": renames})
+                                              "code_edits": bumps})
     changelog = load_json(ds.data_dir / "01_changelog.json")
     q = DRAFT.jira_queries(us, changelog)
     if q["exact"]:
         save_text(ds.run_dir / "jira_query.txt", DRAFT.jira_query_file(q, changelog))
     low = sum(1 for c in conf.values() if c["level"] == "low")
     log(f"решений с низкой достоверностью: {low} из {len(us)}")
-    log(f"файл проверки: {ds.run_dir / V.FILE_NAME} ({status_text})")
+    log(f"файл проверки: {ds.run_dir / V.FILE_NAME} ({ {'created': 'создан', 'kept': 'отметки сохранены', 'updated': 'решения изменились, отметка Проверено снята'}[status] })")
 
 
 def cmd_agent(ds: Dataset, args) -> None:
@@ -116,7 +114,6 @@ def cmd_agent(ds: Dataset, args) -> None:
     unknown = [u["id"] for u in us if u["id"] not in val["marks"]]
     if unknown:
         raise DatasetError("в файле проверки нет задач: " + ", ".join(unknown) + ". Перезапустите collect")
-    decided = V.decisions(val, us)
     if AG.agent_cmd(args.cmd) and not args.dry_run:
         exposed = ds.reference_exposed()
         if exposed and not args.allow_reference:
@@ -124,33 +121,19 @@ def cmd_agent(ds: Dataset, args) -> None:
                 "агент не запущен: в проекте лежит документация техписа или результаты сравнения, агент может их прочитать:\n  "
                 + "\n  ".join(exposed) + "\nУберите их из папки проекта на время работы агента (документацию техписа - в любое "
                 "место вне проекта, потом укажите его: compare --reference <папка>). Запустить все равно: --allow-reference")
-    planned = load_json(ds.data_dir / "07_review.json").get("planned_renames", [])
-    for r in DRAFT.apply_renames(ds, planned, decided):
-        log(f"замена кодом: [{r['lang']}] {r['file']}: «{r['old']}» -> «{r['new']}» ({r['unit']})")
-    index = load_json(ds.data_dir / "06_docs_index.json")
-
-    # черновик release notes пересобирается по проверенным решениям; строки задач, ожидающих решения
-    # агента, входят в него с пометкой: агент проходит все задания за один раз
-    DRAFT.write_release_notes(ds, us, decided, conf, index)
-    recheck = {k.strip(): (args.note or "") for k in (args.recheck or "").split(",") if k.strip()}
-    res = AG.run(ds, us, conf, decided, index, dry_run=args.dry_run, cmd=args.cmd, redo=args.redo,
-                 timeout=args.timeout, recheck=recheck, stale=load_json(ds.data_dir / "05_stale_texts.json"))
+    decided = V.decisions(val, us)
+    res = AG.run(ds, us, conf, decided, load_json(ds.data_dir / "06_docs_index.json"),
+                 load_json(ds.data_dir / "05_stale_texts.json"), dry_run=args.dry_run, cmd=args.cmd, redo=args.redo,
+                 timeout=args.timeout)
     save_text(ds.agent_dir / "summary.md", AG.summary_md(ds, res, decided))
-    counts = {}
+    counts: dict = {}
     for i in res["items"]:
         counts[i["status"]] = counts.get(i["status"], 0) + 1
-    log("задания агента: " + (", ".join(f"{k} - {v}" for k, v in sorted(counts.items())) or "нет"))
-    for i in res["items"]:
-        if i["status"] in ("unverified", "failed"):
-            log(f"не принято: {i['id']}: {i['note']}")
-    if res["touched"]:
-        log(f"агент менял файлы документации напрямую ({len(res['touched'])}): эти изменения не учтены")
-    if not res["launched"]:
-        log(f"агент запускается вручную: откройте в редакторе только папку {AG.workspace(ds)}")
+    log("задания: " + (", ".join(f"{AG.NAMES[k]} - {v}" for k, v in sorted(counts.items())) or "нет"))
+    if counts.get("prepared") and not res["launched"]:
+        log(f"дайте агенту задания из {AG.workspace(ds) / 'tasks'} (открыв в редакторе только эту папку), затем запустите agent еще раз")
     run_doc_checks(ds, res["final"])       # после правок агента проверки пересчитываются
-    log(f"журнал: {ds.agent_dir / 'summary.md'}; сквозные проверки: {ds.run_dir / 'checks.md'}")
-    if any(i["status"] in ("failed", "unverified") for i in res["items"]):
-        raise SystemExit(1)
+    log(f"журнал: {ds.agent_dir / 'summary.md'}")
 
 
 def cmd_compare(ds: Dataset, args) -> None:
@@ -201,8 +184,6 @@ def main(argv: Optional[List[str]] = None) -> None:
     ap.add_argument("--approve", action="store_true", help="agent: считать решения проверенными без отметки в review.md")
     ap.add_argument("--redo", action="store_true", help="agent: выполнить заново уже выполненные задания")
     ap.add_argument("--cmd", help="agent: команда запуска агента; текст задания подается ей на стандартный ввод")
-    ap.add_argument("--recheck", help="agent: отправить задачи на второй круг разбора, через запятую (GUI-4104,GUI-4057)")
-    ap.add_argument("--note", help="agent: что именно проверить на втором круге (вместе с --recheck)")
     ap.add_argument("--reference", help="compare: папка с документацией техписа, если ее нет во входных данных")
     ap.add_argument("--allow-reference", action="store_true",
                     help="agent: запустить, даже если документация техписа лежит в проекте (результат нельзя считать чистым)")

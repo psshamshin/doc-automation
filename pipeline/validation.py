@@ -80,9 +80,8 @@ def summary_of(unit: Dict[str, Any]) -> str:
 
 
 def render(ds, units: List[Dict[str, Any]], conf: Dict[str, Dict[str, Any]], code_edits: List[Dict[str, Any]],
-           rn_files: List[Dict[str, Any]], jira_count: int, marks: Optional[Dict[str, str]] = None,
-           reviewed: bool = False, rn_lines: Optional[List[Dict[str, Any]]] = None,
-           renames: Optional[List[Dict[str, Any]]] = None, jira_extra: Optional[List[Dict[str, Any]]] = None,
+           jira_count: int, marks: Optional[Dict[str, str]] = None, reviewed: bool = False,
+           rn_lines: Optional[List[Dict[str, Any]]] = None, jira_extra: Optional[List[Dict[str, Any]]] = None,
            stale: Optional[List[Dict[str, Any]]] = None, checks: Optional[Dict[str, Any]] = None) -> str:
     marks = marks or {}
     v = ds.versions
@@ -119,8 +118,6 @@ def render(ds, units: List[Dict[str, Any]], conf: Dict[str, Dict[str, Any]], cod
         L.append(f"- [{b['lang']}] `{b['file']}`: версия интерфейса `{b['variable']}` {b['old']} -> {b['new']}.{warn}")
     if not code_edits:
         L.append(f"- Переменная `{P.UI_VERSION_VARIABLE}` в документации не найдена, версия не обновлена.")
-    for r in rn_files:
-        L.append(f"- [{r['lang']}] Черновик release notes: `{P.OUT_RESULT}/MD_{r['lang']}/docs/{r['file']}` ({r['status']}).")
     L += ["", "## Решения по задачам", "",
           "| Задача | Что изменилось | Решение правил | Основание для проверки | Принять | Отклонить | Агенту |",
           "| --- | --- | --- | --- | :-: | :-: | :-: |"]
@@ -139,31 +136,19 @@ def render(ds, units: List[Dict[str, Any]], conf: Dict[str, Dict[str, Any]], cod
         m = marks.get(u["id"], default_mark(u, c))
         boxes = " | ".join("[x]" if m == k else "[ ]" for k in MARKS)
         L.append(f"| {name} | {summary_of(u)} | {rule_text(u)} | {why} | {boxes} |")
-    L += ["", "## Черновик release notes: требует просмотра", "",
-          "Код собрал черновик по образцу прошлого релиза: заголовок, таблица версий, разделы. Строки ниже взяты "
-          "из названий задач в Jira, а если выгрузки нет, из записей разработчиков как есть. Это сырой текст: его "
-          "должен просмотреть человек, а агент получает отдельное задание переписать строки языком пользователя "
-          "и перевести на английский. Версии остальных компонентов в таблице взяты из прошлого релиза: проверить.", ""]
+    L += ["", "## Release notes", "",
+          "Строки напишет агент по записям разработчиков, код соберет из них файл. Ниже то, что в него войдет: по задаче "
+          "запись разработчиков и раздел. Задачи с отметкой «Агенту» войдут, если агент решит, что изменение видно пользователю.", ""]
     if rn_lines:
         sec = {"changes": P.RN_TITLES["rus"]["changes"], "fixes": P.RN_TITLES["rus"]["fixes"]}
-        L += ["| Задача | Раздел | Метка | Строка черновика | Источник |", "| --- | --- | --- | --- | --- |"]
+        L += ["| Задача | Раздел файла | Метка | Запись разработчиков |", "| --- | --- | --- | --- |"]
         for r in rn_lines:
             text = _cell(r["text"])
             text = text[:SUMMARY_LEN + 40].rstrip() + ("..." if len(text) > SUMMARY_LEN + 40 else "")
-            more = f" (и еще строк: {r['more']})" if r["more"] > 0 else ""
-            L.append(f"| {r['unit']} | {sec[r['section']]} | {_cell(r['label'])} | {text}{more} | {r['source']} |")
+            more = f" (и еще записей: {r['more']})" if r["more"] > 0 else ""
+            L.append(f"| {r['unit']} | {sec[r['section']]} | {_cell(r['label'])} | {text}{more} |")
     else:
         L.append("Строк нет.")
-    L += ["", "Задачи с отметкой «Агенту» попадут в черновик после проверки агентом.", "",
-          "## Замены названий, которые внесет код", "",
-          "Код заменит название элемента интерфейса в документации, если оно изменилось в коде, названо в записи "
-          "задачи и стоит в документации в кавычках. Замены вносятся после вашей проверки и только для принятых задач.", ""]
-    if renames:
-        L += ["| Задача | Язык | Файл | Было | Станет |", "| --- | --- | --- | --- | --- |"]
-        for r in renames:
-            L.append(f"| {r['unit']} | {r['lang']} | `{r['file']}`:{r['line']} | «{_cell(r['old'])}» | «{_cell(r['new'])}» |")
-    else:
-        L.append("Таких замен в этом релизе не найдено.")
     if checks:
         from .checks import CHECKS
         L += ["", "## Сквозные проверки документации", "",
@@ -175,8 +160,7 @@ def render(ds, units: List[Dict[str, Any]], conf: Dict[str, Dict[str, Any]], cod
                   "`result/screenshots.md`. Правило: в разделе изменился текст - скриншоты раздела нужно проверить."]
     L += ["", "## Названия, которых больше нет в интерфейсе", "",
           "Эти тексты были в интерфейсе предыдущей версии, в новой их нет, а документация их упоминает. Поиск идет "
-          "по всему релизу и к задачам не привязан. Агент получит одно задание: проверить каждое место и предложить "
-          "замену.", ""]
+          "по всему релизу и к задачам не привязан. Агент получит одно задание: проверить каждое место и предложить замену.", ""]
     if stale:
         L += ["| Язык | Название | Чем заменено | Где в документации |", "| --- | --- | --- | --- |"]
         for x in stale:
@@ -194,7 +178,7 @@ def render(ds, units: List[Dict[str, Any]], conf: Dict[str, Dict[str, Any]], cod
             url = task_url(template, x["key"])
             name = f"[{x['key']}]({url})" if url else x["key"]
             L.append(f"| {name} | {_cell(x['summary'])[:160]} | {', '.join(x['tags']) or '-'} |")
-    L += ["", "Все записи, файлы и тексты по каждой задаче: `report.md`.", ""]
+    L += ["", "Все записи, файлы и тексты по каждой задаче: `data/05_units.json`.", ""]
     return "\n".join(L).replace("—", "-")
 
 
@@ -234,20 +218,22 @@ def proposals(units: List[Dict[str, Any]], conf: Dict[str, Dict[str, Any]]) -> D
     return {u["id"]: decision_of(u, default_mark(u, conf[u["id"]])) for u in units}
 
 
-def write(path: Path, ds, units, conf, code_edits, rn_files, jira_count: int, force: bool = False,
-          rn_lines=None, renames=None, jira_extra=None, stale=None, checks=None) -> str:
+def write(path: Path, ds, units, conf, code_edits, jira_count: int, force: bool = False, **extra) -> str:
     """Не затирает отметки человека. Возвращает, что сделано: created | kept | updated."""
     old = read_text(path)
+
+    def out(**kw):
+        save_text(path, render(ds, units, conf, code_edits, jira_count, **extra, **kw))
+
     if old is None or force:
-        save_text(path, render(ds, units, conf, code_edits, rn_files, jira_count, rn_lines=rn_lines, renames=renames, jira_extra=jira_extra, stale=stale, checks=checks))
+        out()
         return "created"
     prev = parse(old)
     same = all(prev["auto"].get(u["id"]) == rule_text(u) for u in units) and set(prev["marks"]) == {u["id"] for u in units}
     if same and not prev["errors"]:
-        save_text(path, render(ds, units, conf, code_edits, rn_files, jira_count, marks=prev["marks"], reviewed=prev["reviewed"], rn_lines=rn_lines, renames=renames, jira_extra=jira_extra, stale=stale, checks=checks))
+        out(marks=prev["marks"], reviewed=prev["reviewed"])
         return "kept"
     # правила дали другой результат: отметки сохраняются там, где решение правил не изменилось
-    keep = {u["id"]: prev["marks"][u["id"]] for u in units
-            if u["id"] in prev["marks"] and prev["auto"].get(u["id"]) == rule_text(u)}
-    save_text(path, render(ds, units, conf, code_edits, rn_files, jira_count, marks=keep, reviewed=False, rn_lines=rn_lines, renames=renames, jira_extra=jira_extra, stale=stale, checks=checks))
+    keep = {u["id"]: prev["marks"][u["id"]] for u in units if u["id"] in prev["marks"] and prev["auto"].get(u["id"]) == rule_text(u)}
+    out(marks=keep, reviewed=False)
     return "updated"
