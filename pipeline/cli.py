@@ -54,7 +54,7 @@ def cmd_collect(ds: Dataset, args) -> None:
     renames = DRAFT.planned_renames(ds, us)
     status = V.write(ds.run_dir / V.FILE_NAME, ds, us, conf, bumps, rn, len(jira), force=args.force,
                      rn_lines=DRAFT.rn_preview(us, proposals, index), renames=renames,
-                     jira_extra=DRAFT.jira_extra(jira, us))
+                     jira_extra=DRAFT.jira_extra(jira, us), stale=load_json(ds.data_dir / "05_stale_texts.json"))
     status_text = {"created": "создан, ждет проверки", "kept": "ваши отметки сохранены",
                    "updated": "обновлен: решения правил изменились, отметка «Проверено» снята"}[status]
     save_json(ds.data_dir / "07_review.json", {"versions": ds.versions, "proposals": proposals, "confidence": conf,
@@ -101,7 +101,7 @@ def cmd_agent(ds: Dataset, args) -> None:
     DRAFT.write_release_notes(ds, us, decided, conf, index)
     recheck = {k.strip(): (args.note or "") for k in (args.recheck or "").split(",") if k.strip()}
     res = AG.run(ds, us, conf, decided, index, dry_run=args.dry_run, cmd=args.cmd, redo=args.redo,
-                 timeout=args.timeout, recheck=recheck)
+                 timeout=args.timeout, recheck=recheck, stale=load_json(ds.data_dir / "05_stale_texts.json"))
     save_text(ds.agent_dir / "summary.md", AG.summary_md(ds, res, decided))
     counts = {}
     for i in res["items"]:

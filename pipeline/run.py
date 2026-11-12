@@ -78,6 +78,50 @@ def step_collect(ds: Dataset) -> None:
     save_json(data / "04_jira.json", issues)
 
 
+STALE_QUOTES = "«»\"“”„'"
+
+
+def stale_texts(ds: Dataset, i18n_full: Dict[str, Any], rows: Dict[str, Any], code: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Названия, которых больше нет в интерфейсе, но которые упоминает документация.
+
+    Текст берется из сравнения текстов интерфейса двух версий целиком: он был в старой версии и исчез в новой
+    (или у того же ключа стал другим). К задачам поиск не привязан: устаревшее название в документации -
+    ошибка независимо от того, какая задача его убрала. В документации текст ищется дословно и в кавычках:
+    так в ней пишутся названия элементов интерфейса.
+    """
+    lang_of = ds.rules["i18n"]["doc_lang_of_locale"]
+    base = ds.slot(P.SLOT_DOCS_OLD)
+    patches = {f["path"]: f.get("patch") for f in code["files"]}
+    new_values: Dict[str, set] = {}
+    for r in rows["new"]:
+        new_values.setdefault(r["locale"], set()).add(r["value"])
+    out: List[Dict[str, Any]] = []
+    for loc, lang in lang_of.items():
+        cand: Dict[str, Dict[str, Any]] = {}
+        for x in i18n_full["locales"].get(loc, {}).get("removed", []):
+            cand.setdefault(x["value"], {"where": list(x["where"]), "replacement": None})
+        for c in i18n_full.get("changed_same_key", []):
+            if c["locale"] == loc and c["old"] not in new_values.get(loc, set()):
+                e = cand.setdefault(c["old"], {"where": [], "replacement": None})
+                e["where"].append(f"{c['file']}::{c['key']}")
+                e["replacement"] = c["new"]             # у того же ключа: замена известна точно
+        root = DOCS.docs_root(base, lang)
+        pages = {str(p.relative_to(root)): (read_text(p) or "").splitlines() for p in sorted(root.rglob("*.md"))
+                 if P.RELEASE_NOTES_DIR not in p.relative_to(root).parts}
+        for text in sorted(cand):
+            if not (4 <= len(text) <= 80) or "$t(" in text or "{{" in text:
+                continue
+            rx = re.compile("[" + re.escape(STALE_QUOTES) + "]" + re.escape(text) + "[" + re.escape(STALE_QUOTES) + "]")
+            hits = [{"file": f, "line": n, "text": line.strip()[:240]}
+                    for f, lines in pages.items() for n, line in enumerate(lines, 1) if rx.search(line)]
+            if hits:
+                files = sorted({w.split("::")[0] for w in cand[text]["where"]})
+                out.append({"lang": lang, "locale": loc, "text": text, "replacement": cand[text]["replacement"],
+                            "where": cand[text]["where"][:5], "i18n_files": files,
+                            "patches": [patches[f] for f in files if patches.get(f)], "mentions": hits[:20]})
+    return out
+
+
 def step_classify(ds: Dataset) -> None:
     data = ds.data_dir
     cl = load_json(data / "01_changelog.json")
@@ -94,31 +138,9 @@ def step_classify(ds: Dataset) -> None:
                           lambda a, b: I18N.diff_strings(a, b, locs), locale_added, jira, ds.rules, ds.doc_map,
                           i18n_usage=load_json(data / "03_i18n_usage.json"))
 
-    # Е3: где в базовой доке встречаются старые тексты интерфейса
+    # Е3 (изменение 22): устаревшие названия ищутся по всему релизу, без привязки к задачам
     base = ds.slot(P.SLOT_DOCS_OLD)
-    lang_of = ds.rules["i18n"]["doc_lang_of_locale"]
-    # Текст, исчезнувший из интерфейса, ищется в документации независимо от того, назван ли он в записи задачи:
-    # устаревшее название в документации - ошибка, даже если его убрали попутно (изменение 19). Один текст
-    # достается одной задаче: сначала задачам, которые идут в работу, из них - той, у которой меньше файлов.
-    def priority(u):
-        act = u["decision"]["action"]["value"]
-        return (0 if act in ("doc_and_rn", "rn_and_check_doc") else 1, sum(1 for f in u["files"] if f.get("relevant")))
-
-    taken: Dict[str, set] = {}
-    for u in sorted([x for x in units if x["decision"]["action"]["value"] != "skip"], key=priority):
-        mentions: Dict[str, Any] = {}
-        for loc, lang in lang_of.items():
-            needles = [c["old"] for c in u["i18n"]["changed"] if c["locale"] == loc]
-            needles += [r["value"] for r in u["i18n"]["removed"] if r["locale"] == loc]
-            needles = [n for n in dict.fromkeys(needles) if 4 <= len(n) <= 80 and "$t(" not in n and "{{" not in n
-                       and n not in taken.setdefault(lang, set())][:40]
-            if needles:
-                hits = DOCS.find_mentions(base, lang, needles)
-                if hits:
-                    mentions[lang] = hits
-                    taken[lang].update(hits)
-        if mentions:
-            u["doc_mentions"] = mentions
+    stale = stale_texts(ds, i18n_full, rows, code)
 
     # Д10: версии компонентов
     admin = []
@@ -140,6 +162,7 @@ def step_classify(ds: Dataset) -> None:
     unattr = U.unattributed_files(units, code)
     save_json(data / "05_units.json", {"release": ds.release, "units": units, "component_versions": admin,
                                       "unattributed_files": unattr})
+    save_json(data / "05_stale_texts.json", stale)
     report = build_report(ds, cl, code,
                           {"count": len(reach_doc["files"]), "unresolved": len(reach_doc["unresolved_new"])},
                           i18n_full, jira, units, unattr, admin)
