@@ -51,5 +51,8 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: agent-tasks
-          path: output/run/agent/
+          path: |
+            output/run/agent/summary.md
+            output/run/agent_workspace/tasks/
+            output/run/agent_workspace/AGENTS.md
           if-no-files-found: error

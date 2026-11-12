@@ -67,6 +67,7 @@ RULES_DOC = "docs/RULES.md"
 # ---- файлы результата внутри output/<набор>/
 OUT_DATA = "data"            # промежуточные данные шага сбора
 OUT_RESULT = "result"        # рабочая копия документации: сюда идут правки
-OUT_AGENT = "agent"          # очередь, задания и ответы агента
+OUT_AGENT = "agent"          # журнал работы агента, отклоненные правки
+OUT_WORKSPACE = "agent_workspace"   # отдельная папка, в которой работает агент
 OUT_REFERENCE = "reference"  # что изменил техпис (для сравнения)
 OUT_COMPARE = "compare"

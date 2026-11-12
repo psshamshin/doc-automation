@@ -106,10 +106,15 @@ def cmd_agent(ds: Dataset, args) -> None:
     for i in res["items"]:
         counts[i["status"]] = counts.get(i["status"], 0) + 1
     log("задания агента: " + (", ".join(f"{k} - {v}" for k, v in sorted(counts.items())) or "нет"))
-    if not res["available"] and not args.dry_run:
-        log(f"агент не настроен: задания подготовлены в {ds.agent_dir / 'tasks'}. Запуск: --cmd \"<команда агента>\"")
-    log(f"итог: {ds.agent_dir / 'summary.md'}")
-    if any(i["status"] == "failed" for i in res["items"]):
+    for i in res["items"]:
+        if i["status"] in ("unverified", "failed"):
+            log(f"не принято: {i['id']}: {i['note']}")
+    for r in res["rejected"]:
+        log(f"правка отклонена: {r['file']}: {r['why']}")
+    if not res["launched"]:
+        log(f"агент запускается вручную: откройте в редакторе только папку {AG.workspace(ds)}")
+    log(f"журнал: {ds.agent_dir / 'summary.md'}")
+    if any(i["status"] in ("failed", "unverified") for i in res["items"]) or res["rejected"]:
         raise SystemExit(1)
 
 
