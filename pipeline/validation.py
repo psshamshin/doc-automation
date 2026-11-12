@@ -83,7 +83,7 @@ def render(ds, units: List[Dict[str, Any]], conf: Dict[str, Dict[str, Any]], cod
            rn_files: List[Dict[str, Any]], jira_count: int, marks: Optional[Dict[str, str]] = None,
            reviewed: bool = False, rn_lines: Optional[List[Dict[str, Any]]] = None,
            renames: Optional[List[Dict[str, Any]]] = None, jira_extra: Optional[List[Dict[str, Any]]] = None,
-           stale: Optional[List[Dict[str, Any]]] = None) -> str:
+           stale: Optional[List[Dict[str, Any]]] = None, checks: Optional[Dict[str, Any]] = None) -> str:
     marks = marks or {}
     v = ds.versions
     try:
@@ -164,6 +164,13 @@ def render(ds, units: List[Dict[str, Any]], conf: Dict[str, Dict[str, Any]], cod
             L.append(f"| {r['unit']} | {r['lang']} | `{r['file']}`:{r['line']} | «{_cell(r['old'])}» | «{_cell(r['new'])}» |")
     else:
         L.append("Таких замен в этом релизе не найдено.")
+    if checks:
+        from .checks import CHECKS
+        L += ["", "## Сквозные проверки документации", "",
+              "Не привязаны к задачам, выполняются кодом. «Новое» - появилось в этом релизе, остальное было и раньше. "
+              "Подробно, по страницам и строкам: `checks.md`.", "",
+              "| Проверка | Найдено | Из них новое |", "| --- | --- | --- |"]
+        L += [f"| {title} | {len(checks[k]['items'])} | {checks[k]['new']} |" for k, title, _ in CHECKS]
     L += ["", "## Названия, которых больше нет в интерфейсе", "",
           "Эти тексты были в интерфейсе предыдущей версии, в новой их нет, а документация их упоминает. Поиск идет "
           "по всему релизу и к задачам не привязан. Агент получит одно задание: проверить каждое место и предложить "
@@ -226,19 +233,19 @@ def proposals(units: List[Dict[str, Any]], conf: Dict[str, Dict[str, Any]]) -> D
 
 
 def write(path: Path, ds, units, conf, code_edits, rn_files, jira_count: int, force: bool = False,
-          rn_lines=None, renames=None, jira_extra=None, stale=None) -> str:
+          rn_lines=None, renames=None, jira_extra=None, stale=None, checks=None) -> str:
     """Не затирает отметки человека. Возвращает, что сделано: created | kept | updated."""
     old = read_text(path)
     if old is None or force:
-        save_text(path, render(ds, units, conf, code_edits, rn_files, jira_count, rn_lines=rn_lines, renames=renames, jira_extra=jira_extra, stale=stale))
+        save_text(path, render(ds, units, conf, code_edits, rn_files, jira_count, rn_lines=rn_lines, renames=renames, jira_extra=jira_extra, stale=stale, checks=checks))
         return "created"
     prev = parse(old)
     same = all(prev["auto"].get(u["id"]) == rule_text(u) for u in units) and set(prev["marks"]) == {u["id"] for u in units}
     if same and not prev["errors"]:
-        save_text(path, render(ds, units, conf, code_edits, rn_files, jira_count, marks=prev["marks"], reviewed=prev["reviewed"], rn_lines=rn_lines, renames=renames, jira_extra=jira_extra, stale=stale))
+        save_text(path, render(ds, units, conf, code_edits, rn_files, jira_count, marks=prev["marks"], reviewed=prev["reviewed"], rn_lines=rn_lines, renames=renames, jira_extra=jira_extra, stale=stale, checks=checks))
         return "kept"
     # правила дали другой результат: отметки сохраняются там, где решение правил не изменилось
     keep = {u["id"]: prev["marks"][u["id"]] for u in units
             if u["id"] in prev["marks"] and prev["auto"].get(u["id"]) == rule_text(u)}
-    save_text(path, render(ds, units, conf, code_edits, rn_files, jira_count, marks=keep, reviewed=False, rn_lines=rn_lines, renames=renames, jira_extra=jira_extra, stale=stale))
+    save_text(path, render(ds, units, conf, code_edits, rn_files, jira_count, marks=keep, reviewed=False, rn_lines=rn_lines, renames=renames, jira_extra=jira_extra, stale=stale, checks=checks))
     return "updated"

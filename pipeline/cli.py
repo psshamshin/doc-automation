@@ -2,6 +2,7 @@
 
     python3 -m pipeline collect <набор>    сбор изменений, отбор по правилам, черновик
     python3 -m pipeline agent <набор>      агент: проверка решений с низкой достоверностью и текст (после проверки review.md)
+    python3 -m pipeline check <набор>      сквозные проверки документации (ссылки, языки, картинки)
     python3 -m pipeline compare <набор>    сравнение результата с документацией техписа
     python3 -m pipeline versions <набор>   показать, какие версии определились
     python3 -m pipeline learn <набор>      записать релизы из документации в базу знаний
@@ -17,6 +18,7 @@ import time
 from typing import List, Optional
 
 from . import agent as AG
+from . import checks as CHK
 from . import confidence as CONF
 from . import draft as DRAFT
 from . import product as P
@@ -31,6 +33,21 @@ def _review(ds: Dataset):
     units = load_json(ds.data_dir / "05_units.json")
     conf = CONF.assess(units["units"], ds.rules)
     return units, conf
+
+
+def run_doc_checks(ds: Dataset) -> dict:
+    """Сквозные проверки результата: пишет checks.md и данные, возвращает итог для файла проверки."""
+    res = CHK.run_checks(ds)
+    save_json(ds.data_dir / "05_doc_checks.json", res)
+    save_text(ds.run_dir / "checks.md", CHK.render_md(ds, res))
+    return res
+
+
+def cmd_check(ds: Dataset, args) -> None:
+    res = run_doc_checks(ds)
+    for k, title, _ in CHK.CHECKS:
+        log(f"{title}: {len(res[k]['items'])}, из них новое: {res[k]['new']}, исправлено: {res[k]['fixed']}")
+    log(f"подробно: {ds.run_dir / 'checks.md'}")
 
 
 def cmd_collect(ds: Dataset, args) -> None:
@@ -54,7 +71,8 @@ def cmd_collect(ds: Dataset, args) -> None:
     renames = DRAFT.planned_renames(ds, us)
     status = V.write(ds.run_dir / V.FILE_NAME, ds, us, conf, bumps, rn, len(jira), force=args.force,
                      rn_lines=DRAFT.rn_preview(us, proposals, index), renames=renames,
-                     jira_extra=DRAFT.jira_extra(jira, us), stale=load_json(ds.data_dir / "05_stale_texts.json"))
+                     jira_extra=DRAFT.jira_extra(jira, us), stale=load_json(ds.data_dir / "05_stale_texts.json"),
+                     checks=run_doc_checks(ds))
     status_text = {"created": "создан, ждет проверки", "kept": "ваши отметки сохранены",
                    "updated": "обновлен: решения правил изменились, отметка «Проверено» снята"}[status]
     save_json(ds.data_dir / "07_review.json", {"versions": ds.versions, "proposals": proposals, "confidence": conf,
@@ -114,7 +132,8 @@ def cmd_agent(ds: Dataset, args) -> None:
         log(f"агент менял файлы документации напрямую ({len(res['touched'])}): эти изменения не учтены")
     if not res["launched"]:
         log(f"агент запускается вручную: откройте в редакторе только папку {AG.workspace(ds)}")
-    log(f"журнал: {ds.agent_dir / 'summary.md'}")
+    run_doc_checks(ds)                     # после правок агента проверки пересчитываются
+    log(f"журнал: {ds.agent_dir / 'summary.md'}; сквозные проверки: {ds.run_dir / 'checks.md'}")
     if any(i["status"] in ("failed", "unverified") for i in res["items"]):
         raise SystemExit(1)
 
@@ -153,7 +172,7 @@ def cmd_learn(ds: Dataset, args) -> None:
     log(f"база знаний: {ds.knowledge_path} ({'изменений: ' + str(len(changed)) if changed else 'без изменений'})")
 
 
-COMMANDS = {"collect": cmd_collect, "agent": cmd_agent, "compare": cmd_compare, "versions": cmd_versions, "learn": cmd_learn}
+COMMANDS = {"collect": cmd_collect, "check": cmd_check, "agent": cmd_agent, "compare": cmd_compare, "versions": cmd_versions, "learn": cmd_learn}
 
 
 def main(argv: Optional[List[str]] = None) -> None:
