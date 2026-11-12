@@ -18,14 +18,17 @@ class ReleaseNoteSourceTest(unittest.TestCase):
     def setUp(self):
         self.unit = dict(demo_units()["GUI-105"])
 
-    def test_changelog_when_no_jira(self):
-        self.assertEqual(DRAFT.rn_source(self.unit), {"source": "список изменений", "texts": ["Добавлен фильтр заказов по дате"]})
+    def test_changelog_is_the_source(self):
+        self.assertEqual(DRAFT.rn_source(self.unit),
+                         {"source": "список изменений", "jira": "", "texts": ["Добавлен фильтр заказов по дате"]})
 
-    def test_jira_title_without_product_prefix(self):
-        self.unit["jira"] = {"summary": "[point][ui] Фильтр заказов по дате создания"}
-        self.assertEqual(DRAFT.rn_source(self.unit), {"source": "Jira", "texts": ["Фильтр заказов по дате создания"]})
+    def test_jira_title_is_extra_and_without_product_prefix(self):
+        # название задачи в Jira внутреннее: в черновик идет запись разработчиков, название дается отдельно
+        self.unit["jira"] = {"summary": "[point][ui] Доработка страницы Заказы"}
+        src = DRAFT.rn_source(self.unit)
+        self.assertEqual((src["jira"], src["texts"]), ("Доработка страницы Заказы", ["Добавлен фильтр заказов по дате"]))
         line = DRAFT.rn_block(self.unit, {}, "rus", False)[0]
-        self.assertEqual(line, "- **[Общее]**: Фильтр заказов по дате создания <!-- GUI-105, источник: Jira -->")
+        self.assertEqual(line, "- **[Общее]**: Добавлен фильтр заказов по дате <!-- GUI-105, источник: список изменений -->")
 
 
 class JiraExportTest(unittest.TestCase):
@@ -36,6 +39,9 @@ class JiraExportTest(unittest.TestCase):
   <summary>[point] Заголовок страницы сбрасывается при прокрутке</summary>
   <description>&lt;p&gt;Описание&lt;/p&gt;</description><type>Bug</type><status>Done</status><labels></labels></item>
 <item><title>[GUI-105] [point3] Фильтр</title><key id="2">GUI-105</key><summary>[point3] Фильтр по дате</summary></item>
+<item><title>[GUI-104] [shared] Языки</title><key id="4">GUI-104</key><summary>[shared] Набор языков</summary></item>
+<item><title>[GUI-106] Меню</title><key id="5">GUI-106</key><summary>Порядок меню в Point 3</summary></item>
+<item><title>[GUI-101] [point3] Селект</title><key id="6">GUI-101</key><summary>[point3] Перенос селекта</summary></item>
 <item><title>[GUI-900] Без метки</title><key id="3">GUI-900</key><summary>Задача, которой нет в списке изменений</summary></item>
 </channel></rss>"""
 
@@ -50,19 +56,43 @@ class JiraExportTest(unittest.TestCase):
         self.units = {u["id"]: u for u in json.loads((self.out / P.OUT_DATA / "05_units.json").read_text(encoding="utf-8"))["units"]}
         self.review = (self.out / V.FILE_NAME).read_text(encoding="utf-8")
 
-    def test_product_by_title_prefix(self):
-        self.assertEqual(self.units["GUI-103"]["decision"]["product"]["rule"], "В1")
-        self.assertEqual(self.units["GUI-105"]["decision"]["product"]["rule"], "В2")   # метка другого продукта
-        self.assertEqual(self.units["GUI-105"]["decision"]["action"]["value"], "skip")
-        self.assertEqual(self.units["GUI-106"]["decision"]["product"]["rule"], "В3")   # задачи нет в выгрузке
+    def product(self, uid):
+        d = self.units[uid]["decision"]["product"]
+        return d["value"], d["rule"], d.get("jira_conflict")
 
-    def test_release_note_line_from_title(self):
-        self.assertIn("| GUI-103 | Исправленные ошибки | Работа с системой | Заголовок страницы сбрасывается при прокрутке | Jira |", self.review)
+    def test_point_prefix_decides(self):
+        self.assertEqual(self.product("GUI-103"), ("point2", "В1", None))
+
+    def test_other_product_prefix_does_not_override_code(self):
+        # [point3] в названии, но код задачи использует POINT 2: задача остается, в файле проверки пометка И9
+        self.assertEqual(self.product("GUI-105"), ("point2", "В5", "point3"))
+        self.assertEqual(self.units["GUI-105"]["decision"]["action"]["value"], "doc_and_rn")
+        self.assertIn("И9: Jira: point3", self.review)
+
+    def test_other_product_named_in_title_text(self):
+        self.assertEqual(self.product("GUI-106"), ("point2", "В3", "point3"))
+
+    def test_tag_that_is_not_a_product_is_ignored(self):
+        self.assertEqual(self.product("GUI-104"), ("point2", "В5", None))
+
+    def test_other_product_prefix_without_point_code_drops_the_task(self):
+        from pipeline import units as U
+        from tests.helpers import RULES, entry
+        e = entry("Добавлена панель отчета", ["monokit", "widgets/report-panel"], "add")
+        unit = {"entries": [e]}
+        p = "packages/monokit/widgets/report-panel/ReportPanel.tsx"
+        got = U.decide_product(unit, {"product_tags": ["point3"], "summary": "[point3] Панель"}, {e["id"]: {p}}, set(), RULES)
+        self.assertEqual((got["value"], got["rule"]), ("other", "В2"))
+
+    def test_release_note_line_from_changelog(self):
+        # в черновик идет запись разработчиков, а не внутреннее название задачи
+        self.assertIn("| GUI-103 | Исправленные ошибки | Работа с системой | Исправлен сброс заголовка страницы при прокрутке. "
+                      "Удалена лишняя обертка | список изменений |", self.review)
 
     def test_tasks_missing_from_changelog_are_listed(self):
         self.assertIn("## Задачи Jira, которых нет в списке изменений", self.review)
         self.assertIn("| GUI-900 | Задача, которой нет в списке изменений | - |", self.review)
-        self.assertIn("| Задач Jira в выгрузке | 3 |", self.review)
+        self.assertIn("| Задач Jira в выгрузке | 6 |", self.review)
 
 
 class JiraQueryTest(unittest.TestCase):

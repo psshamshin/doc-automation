@@ -102,8 +102,11 @@ def step_classify(ds: Dataset) -> None:
             continue
         mentions: Dict[str, Any] = {}
         for loc, lang in lang_of.items():
+            # удаленный текст ищется, только если он дословно назван в записи задачи (изменение 17):
+            # общий файл переводов мог вычистить чужой рефакторинг
+            said = " ".join(e["text"] for e in u["entries"] if e["_flags"].get("significant")).lower()
             needles = [c["old"] for c in u["i18n"]["changed"] if c["locale"] == loc]
-            needles += [r["value"] for r in u["i18n"]["removed"] if r["locale"] == loc]
+            needles += [r["value"] for r in u["i18n"]["removed"] if r["locale"] == loc and r["value"].lower() in said]
             needles = [n for n in dict.fromkeys(needles) if 4 <= len(n) <= 80 and "$t(" not in n and "{{" not in n][:30]
             if needles:
                 hits = DOCS.find_mentions(base, lang, needles)

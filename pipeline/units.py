@@ -147,16 +147,52 @@ def significant_entries(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def decide_product(unit, jira_issue, entry_files: Dict[str, Set[str]], reachable: Set[str], rules) -> Dict[str, Any]:
-    """Порядок правил В1 → В9. Файлы считаются только по записям без меток другого продукта:
-    общие barrel-экспорты делают «достижимыми» и компоненты point3."""
+    """Порядок правил: В1 (Jira: POINT 2), затем В7, В3-В6, В9 по коду, В2 (Jira: другой продукт и кода POINT 2 нет).
+    Файлы считаются только по записям без меток другого продукта: общие barrel-экспорты делают
+    «достижимыми» и компоненты point3."""
     app_dir = rules["attribution"]["app_dir"]
     point_tag = rules["product"]["jira_point_tag"]
-    if jira_issue and jira_issue.get("product_tags"):
-        tags = jira_issue["product_tags"]
-        if point_tag in tags:
-            return {"value": "point2", "rule": "В1", "reasons": [f"Jira: префикс [{point_tag}] в названии"]}
-        return {"value": "other", "rule": "В2", "reasons": [f"Jira: префиксы {tags} без [{point_tag}]"]}
+    jira_other = jira_product(jira_issue, rules)
+    if jira_other == "point2":
+        return {"value": "point2", "rule": "В1", "reasons": [f"Jira: префикс [{point_tag}] в названии"]}
+    code = _product_by_code(unit, entry_files, reachable, rules)
+    if jira_other is None:
+        return code
+    # Jira относит задачу к другому продукту (изменение 16)
+    if code["value"] == "point2":
+        code["jira_conflict"] = jira_other
+        code["reasons"] = code["reasons"] + [f"в Jira задача отнесена к другому продукту ({jira_other}), но ее код использует POINT 2"]
+        return code
+    return {"value": "other", "rule": "В2", "reasons": [f"Jira: задача отнесена к другому продукту ({jira_other}), "
+                                                         "кода POINT 2 у значимых записей нет"]}
 
+
+def jira_product(jira_issue, rules) -> Optional[str]:
+    """Что говорит о продукте название задачи в Jira: 'point2', имя другого продукта или None (ничего).
+
+    Метки, не относящиеся к продуктам (например, [shared]), ни о чем не говорят. Без меток учитывается
+    упоминание другого продукта в тексте названия ('... в Point 3').
+    """
+    if not jira_issue:
+        return None
+    prod = rules["product"]
+    tags = jira_issue.get("product_tags") or []
+    if prod["jira_point_tag"] in tags:
+        return "point2"
+    other = [t for t in tags if t in prod.get("jira_other_tags", [])]
+    if other:
+        return ", ".join(other)
+    summary = jira_issue.get("summary") or ""
+    for name, cfg in prod["text_markers"].items():
+        if any(re.search(rx, summary, flags=re.I) for rx in cfg.get("regex", [])) and \
+                not any(re.search(rx, summary, flags=re.I) for rx in cfg.get("unless_regex", [])):
+            return name
+    return None
+
+
+def _product_by_code(unit, entry_files: Dict[str, Set[str]], reachable: Set[str], rules) -> Dict[str, Any]:
+    """Правила В3-В9: продукт по записям списка изменений и файлам кода."""
+    app_dir = rules["attribution"]["app_dir"]
     entries = unit["entries"]
     unmarked = [e for e in entries if not e["_flags"]["other_product"]]
     paths_all = sorted({p for s in entry_files.values() for p in s})

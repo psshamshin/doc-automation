@@ -16,7 +16,8 @@ from typing import Any, Dict, List
 
 # критерии группы И (docs/RULES.md)
 RULE_OF = {"product_unclear": "И1", "visibility_unclear": "И2", "text_only": "И3", "shared_strings": "И4",
-           "other_product_files": "И5", "class_default": "И6", "no_page": "И7", "many_pages": "И8"}
+           "other_product_files": "И5", "class_default": "И6", "no_page": "И7", "many_pages": "И8",
+           "jira_other_product": "И9"}
 DOC_ACTIONS = ("doc_and_rn", "rn_and_check_doc", "rn_and_check_langs")
 MANY_PAGES = 3
 
@@ -54,6 +55,10 @@ def assess(units: List[Dict[str, Any]], rules: Dict[str, Any]) -> Dict[str, Dict
                 add("visibility_unclear", "decision",
                     "правила не определили, видит ли изменение пользователь: нет изменений в текстах интерфейса, "
                     "навигации и правах, в записях нет слов об интерфейсе", "видимость не определена")
+        if action != "skip" and d["product"].get("jira_conflict"):
+            add("jira_other_product", "info",
+                f"в Jira задача отнесена к другому продукту ({d['product']['jira_conflict']}), решение принято по коду",
+                f"Jira: {d['product']['jira_conflict']}")
         if action != "skip":
             rule = d["visibility"]["rule"]
             src = [f for f in u["files"] if f.get("relevant") and f["category"] == "source"]
