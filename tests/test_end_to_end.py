@@ -506,6 +506,36 @@ class ManualAgentTest(unittest.TestCase):
         run("agent", self.out, "--approve")
         self.assertEqual(self.state()[0]["NOTASK_0.10.0_7__decide"]["status"], "done")
 
+    def test_quotes_as_printed_in_the_task_are_accepted(self):
+        # все эти формы агент использовал в настоящем прогоне; это те же данные, что в задании
+        task = (self.out / P.OUT_WORKSPACE / "tasks" / "NOTASK_0.10.0_7__decide.md").read_text(encoding="utf-8")
+        line = re.search(r"^- (\[[^\n]*Обновлены зависимости сборки)$", task, flags=re.M).group(1)
+        self.assertTrue(line.startswith("[техническая]"))
+        self.answer([{"source": "changelog", "quote": line}])       # запись вместе с пометками из задания
+        run("agent", self.out, "--approve")
+        self.assertEqual(self.state()[0]["NOTASK_0.10.0_7__decide"]["status"], "done")
+
+    def test_code_quote_without_plus_signs_and_own_task_file_in_steps(self):
+        item = "GUI-105__write_doc"
+        page = "docs/MD_rus/docs/user-manual/100_Orders.md"
+        ev = [{"source": "sources/GUI-105/changes.md", "quote": "export const ruRu = { status: 'Статус', reset: 'Сбросить', date: 'Дата заказа'"},
+              {"source": "sources/GUI-105/patches/", "quote": "date: 'Order date'"},          # папка патчей целиком
+              {"source": "i18n", "quote": "добавлен [ru]: «Дата заказа»"}]                    # текст интерфейса, как в задании
+        (self.answers / f"{item}.json").write_text(json.dumps({
+            "item": item, "rules": self.code, "status": "done", "summary": "новый фильтр",
+            "steps": [{"source": f"tasks/{item}.md", "found": "задание"}, {"source": "sources/GUI-105/patches/", "found": "патчи"}],
+            "edits": [{"file": page, "find": "Фильтр «Статус» отбирает заказы по статусу.",
+                       "replace": "Фильтр «Статус» отбирает заказы по статусу.\n\nФильтр «Дата заказа» отбирает заказы по дате.",
+                       "what": "добавлен фильтр", "evidence": ev}]}, ensure_ascii=False), encoding="utf-8")
+        run("agent", self.out, "--approve")
+        q, _ = self.state()
+        self.assertEqual(q[item]["status"], "done", q[item]["problems"])
+        self.assertIn("Фильтр «Дата заказа»", (self.out / P.OUT_RESULT / "MD_rus" / "docs" / "user-manual" / "100_Orders.md").read_text(encoding="utf-8"))
+
+    def test_digest_says_whether_point_app_uses_the_file(self):
+        digest = (self.out / P.OUT_WORKSPACE / "sources" / "GUI-105" / "changes.md").read_text(encoding="utf-8")
+        self.assertIn("OrdersFilter.tsx [source, modified, используется приложением POINT 2]", digest)
+
     def test_invented_explanation_is_not_accepted(self):
         self.answer([{"source": "changelog", "quote": "меню изменено и добавлены английские названия"}])
         with self.assertRaises(SystemExit):

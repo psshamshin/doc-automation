@@ -114,7 +114,9 @@ def build_digest(ds, u: Dict[str, Any]) -> str:
     rel.sort(key=lambda f: (DIGEST_ORDER.get(f["category"], 2), f["path"]))
     L = [f"# Изменения кода по задаче {u['id']}", "",
          "Только измененные строки: `+` добавлено, `-` удалено. Сначала код приложения, затем тексты интерфейса, "
-         "затем стили. Файлы тестов и сборки не показаны.", ""]
+         "затем стили. Файлы тестов и сборки не показаны.", "",
+         "У каждого файла указано, использует ли его приложение POINT 2: это установлено по связям между файлами "
+         "кода, перепроверять не нужно.", ""]
     total, shown = 0, 0
     for f in rel:
         if total >= DIGEST_LINES_TOTAL:
@@ -122,7 +124,9 @@ def build_digest(ds, u: Dict[str, Any]) -> str:
         lines = [x for x in (read_text(data / f["patch"]) or "").splitlines()
                  if x.startswith("@@") or ((x.startswith("+") or x.startswith("-")) and not x.startswith(("+++", "---")))]
         cut = lines[:min(DIGEST_LINES_PER_FILE, DIGEST_LINES_TOTAL - total)]
-        note = "" if f["reachable_from_app"] else ", приложение POINT 2 этот файл не использует"
+        other = any(m in f["path"] for m in ds.rules["product"]["other_product_file_markers"])
+        note = (", файл другого продукта" if other else
+                ", используется приложением POINT 2" if f["reachable_from_app"] else ", приложение POINT 2 этот файл не использует")
         L += [f"## {f['path']} [{f['category']}, {f['status']}{note}]", "", "```diff", *cut, "```"]
         if len(cut) < len(lines):
             L.append(f"Показано строк: {len(cut)} из {len(lines)}. Полностью: `patches/{Path(f['patch']).name}`.")
@@ -293,6 +297,16 @@ def _norm(text: str) -> str:
     return " ".join((text or "").split())
 
 
+def _norm_code(text: str) -> str:
+    """Текст патча или сводки без знаков '+' и '-' в начале строк: агент цитирует код без них."""
+    return _norm("\n".join(re.sub(r"^[+-](?![+-])", "", line) for line in (text or "").splitlines()))
+
+
+def _own_files(item_id: str) -> tuple:
+    """Служебные файлы, которые агент открывает по ходу работы: это не источники, но и не нарушение."""
+    return (f"tasks/{item_id}.md", "AGENTS.md", "progress.md")
+
+
 def _virtual_text(u: Dict[str, Any], source: str) -> str:
     """Текст виртуального источника. Записи списка изменений даются и в том виде, как они напечатаны в задании."""
     if source == "changelog":
@@ -348,7 +362,8 @@ class Docs:
         self.dirty.clear()
 
 
-def verify_answer(ds, u: Dict[str, Any], kind: str, answer: Dict[str, Any], docs: Docs) -> Dict[str, Any]:
+def verify_answer(ds, u: Dict[str, Any], kind: str, answer: Dict[str, Any], docs: Docs, conf: Optional[Dict[str, Any]] = None,
+                  item_id: str = "") -> Dict[str, Any]:
     """Сверяет ответ с реальными данными. Возвращает нарушения и готовые к внесению правки.
 
     * каждое утверждение и каждая правка подтверждены дословной цитатой из источников задачи;
@@ -361,6 +376,22 @@ def verify_answer(ds, u: Dict[str, Any], kind: str, answer: Dict[str, Any], docs
     sources = unit_sources(ds, u, kind)
     pages = unit_pages(ds, u)
     known = _norm(" \n ".join(_virtual_text(u, k) for k in VIRTUAL_SOURCES))
+    # агент цитирует записи, тексты интерфейса и Jira в том виде, как они напечатаны в задании
+    printed = _norm(_unit_context(ds, u, conf or {}, kind))
+
+    def in_source(src: str, quote: str) -> Optional[bool]:
+        """True - цитата есть; False - нет; None - источник не разрешен. Папка источников ищется целиком."""
+        if src in VIRTUAL_SOURCES:
+            return quote in _norm(_virtual_text(u, src)) or quote in printed
+        if src in sources:
+            text = read_text(sources[src]) or ""
+            return quote in _norm(text) or _norm_code(quote) in _norm_code(text)
+        if src in pages:
+            return quote in _norm(read_text(docs.path(src)) or "")
+        inside = [p for k, p in sources.items() if k.startswith(src.rstrip("/") + "/")]
+        if inside:
+            return any(_norm_code(quote) in _norm_code(read_text(p) or "") for p in inside)
+        return None
 
     def check_ev(ev: Any, where: str) -> None:
         if not isinstance(ev, dict) or not ev.get("source") or not ev.get("quote"):
@@ -369,17 +400,12 @@ def verify_answer(ds, u: Dict[str, Any], kind: str, answer: Dict[str, Any], docs
         src, quote = str(ev["source"]).strip("`"), _norm(str(ev["quote"]))
         if len(quote) < 3:
             problems.append(f"{where}: цитата слишком короткая")
-        elif src in VIRTUAL_SOURCES:
-            if quote not in _norm(_virtual_text(u, src)):
-                problems.append(f"{where}: цитаты нет в источнике {src}: «{quote[:80]}»")
-        elif src in sources:
-            if quote not in _norm(read_text(sources[src]) or ""):
-                problems.append(f"{where}: цитаты нет в источнике {src}: «{quote[:80]}»")
-        elif src in pages:
-            if quote not in _norm(read_text(docs.path(src)) or ""):
-                problems.append(f"{where}: цитаты нет на странице {src}: «{quote[:80]}»")
-        else:
+            return
+        found = in_source(src, quote)
+        if found is None:
             problems.append(f"{where}: источник не входит в разрешенные для этой задачи: {src}")
+        elif not found:
+            problems.append(f"{where}: цитаты нет в источнике {src}: «{quote[:80]}»")
 
     def check_list(evs: Any, where: str) -> None:
         if not isinstance(evs, list) or not evs:
@@ -396,7 +422,8 @@ def verify_answer(ds, u: Dict[str, Any], kind: str, answer: Dict[str, Any], docs
             src = str(st.get("source", "")).strip("`") if isinstance(st, dict) else ""
             if not src or not st.get("found"):
                 problems.append(f"шаг {n}: нужны поля source и found")
-            elif src not in VIRTUAL_SOURCES and src not in sources and src not in pages:
+            elif src not in VIRTUAL_SOURCES and src not in sources and src not in pages and src not in _own_files(item_id) \
+                    and not any(k.startswith(src.rstrip("/") + "/") for k in sources):
                 problems.append(f"шаг {n}: открыт файл вне источников задачи: {src}")
     if kind == "decide":
         check_list(answer.get("evidence"), "решение")
@@ -690,7 +717,7 @@ def run(ds, units: List[Dict[str, Any]], conf: Dict[str, Any], decisions: Dict[s
                 item.update(status=a["status"], note=str(a.get("summary", ""))[:300],
                             applied=[{"file": f"release notes: строк {len(v['lines'])}", "what": "файлы RU и EN собраны кодом"}])
         elif r["ok"]:
-            v = verify_answer(ds, unit_of(item), item["kind"], a, docs)
+            v = verify_answer(ds, unit_of(item), item["kind"], a, docs, conf, item["id"])
             if v["problems"]:
                 item.update(status="unverified", problems=v["problems"],
                             note="не подтверждено: " + "; ".join(v["problems"][:3])
