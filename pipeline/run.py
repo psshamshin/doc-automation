@@ -97,21 +97,26 @@ def step_classify(ds: Dataset) -> None:
     # Е3: где в базовой доке встречаются старые тексты интерфейса
     base = ds.slot(P.SLOT_DOCS_OLD)
     lang_of = ds.rules["i18n"]["doc_lang_of_locale"]
-    for u in units:
-        if u["decision"]["action"]["value"] == "skip":
-            continue
+    # Текст, исчезнувший из интерфейса, ищется в документации независимо от того, назван ли он в записи задачи:
+    # устаревшее название в документации - ошибка, даже если его убрали попутно (изменение 19). Один текст
+    # достается одной задаче: сначала задачам, которые идут в работу, из них - той, у которой меньше файлов.
+    def priority(u):
+        act = u["decision"]["action"]["value"]
+        return (0 if act in ("doc_and_rn", "rn_and_check_doc") else 1, sum(1 for f in u["files"] if f.get("relevant")))
+
+    taken: Dict[str, set] = {}
+    for u in sorted([x for x in units if x["decision"]["action"]["value"] != "skip"], key=priority):
         mentions: Dict[str, Any] = {}
         for loc, lang in lang_of.items():
-            # удаленный текст ищется, только если он дословно назван в записи задачи (изменение 17):
-            # общий файл переводов мог вычистить чужой рефакторинг
-            said = " ".join(e["text"] for e in u["entries"] if e["_flags"].get("significant")).lower()
             needles = [c["old"] for c in u["i18n"]["changed"] if c["locale"] == loc]
-            needles += [r["value"] for r in u["i18n"]["removed"] if r["locale"] == loc and r["value"].lower() in said]
-            needles = [n for n in dict.fromkeys(needles) if 4 <= len(n) <= 80 and "$t(" not in n and "{{" not in n][:30]
+            needles += [r["value"] for r in u["i18n"]["removed"] if r["locale"] == loc]
+            needles = [n for n in dict.fromkeys(needles) if 4 <= len(n) <= 80 and "$t(" not in n and "{{" not in n
+                       and n not in taken.setdefault(lang, set())][:40]
             if needles:
                 hits = DOCS.find_mentions(base, lang, needles)
                 if hits:
                     mentions[lang] = hits
+                    taken[lang].update(hits)
         if mentions:
             u["doc_mentions"] = mentions
 

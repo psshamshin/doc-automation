@@ -55,6 +55,30 @@ def rn_source(unit: Dict[str, Any]) -> Dict[str, Any]:
 PENDING_NOTE = "ожидает решения агента"
 
 
+def is_fix_unit(unit: Dict[str, Any], decisions: Dict[str, str]) -> bool:
+    if decisions.get(unit["id"]) == "rn":
+        return True
+    sig = [e for e in unit["entries"] if e["_flags"].get("significant")]
+    return bool(sig) and all(e["type"] == "fix" for e in sig)
+
+
+def section_choices(index: Dict[str, Any]) -> List[str]:
+    """Метки разделов, из которых агент выбирает раздел строки release notes: названия страниц руководства."""
+    titles = page_titles(index, "rus")
+    return [P.RN_TITLES["rus"]["general"]] + sorted({t for p, t in titles.items() if p.startswith("user-manual/")})
+
+
+def agent_label(section: Optional[str], index: Dict[str, Any], lang: str) -> Optional[str]:
+    """Метка раздела на нужном языке по русскому названию, которое выбрал агент."""
+    if not section:
+        return None
+    if section == P.RN_TITLES["rus"]["general"]:
+        return P.RN_TITLES[lang]["general"]
+    ru = page_titles(index, "rus")
+    page = next((p for p, t in ru.items() if t == section), None)
+    return page_titles(index, lang).get(page) if page else None
+
+
 def rn_block(unit: Dict[str, Any], titles: Dict[str, str], lang: str, flagged: bool, decision: str = "") -> List[str]:
     if decision == "langs":
         return [f"- **[{P.RN_TITLES[lang]['general']}]**: Изменен набор языков интерфейса. "
@@ -184,7 +208,7 @@ def bump_versions(ds, component_versions: List[Dict[str, Any]]) -> List[Dict[str
 
 
 def write_release_notes(ds, units: List[Dict[str, Any]], decisions: Dict[str, str], conf: Dict[str, Any],
-                        index: Dict[str, Any], final_lines: Optional[Dict[str, Dict[str, str]]] = None) -> List[Dict[str, Any]]:
+                        index: Dict[str, Any], final_lines: Optional[Dict[str, List[Dict[str, str]]]] = None) -> List[Dict[str, Any]]:
     """Черновик release notes RU и EN по образцу файла прошлого релиза. Готовый текст (без метки черновика) не трогает."""
     v = ds.versions
     out = []
@@ -224,8 +248,11 @@ def write_release_notes(ds, units: List[Dict[str, Any]], decisions: Dict[str, st
         def is_fix(u):
             return u["decision"]["action"]["value"] == "rn_and_check_doc"
         waiting = [u for u in units if decisions.get(u["id"]) == "agent"] if final_lines is None else []
-        changes = [u for u in units if decisions.get(u["id"]) in ("doc", "langs")] + [u for u in waiting if not is_fix(u)]
-        fixes = [u for u in units if decisions.get(u["id"]) == "rn"] + [u for u in waiting if is_fix(u)]
+        # раздел по типу записей (изменение 20): задача, все значимые записи которой из "Исправлено", идет в
+        # "Исправленные ошибки", даже если по ней правится документация
+        accepted = [u for u in units if decisions.get(u["id"]) in ("doc", "langs", "rn")]
+        changes = [u for u in accepted if not is_fix_unit(u, decisions)] + [u for u in waiting if not is_fix(u)]
+        fixes = [u for u in accepted if is_fix_unit(u, decisions)] + [u for u in waiting if is_fix(u)]
         pending = [u["id"] for u in waiting]
         for title, group in ((T["changes"], changes), (T["fixes"], fixes)):
             if not group:
@@ -233,9 +260,10 @@ def write_release_notes(ds, units: List[Dict[str, Any]], decisions: Dict[str, st
             L += [f"**{title}**", ""]
             for u in group:
                 if final_lines is not None:
-                    # итоговый файл: структуру собирает код, формулировку дал агент (изменение 18)
-                    text = final_lines[u["id"]]["ru" if lang == "rus" else "en"].strip()
-                    L += [f"- **[{section_label(u, titles, lang)}]**: {text}", ""]
+                    # итоговый файл: структуру собирает код, формулировки и раздел дал агент (изменения 18, 20)
+                    for line in final_lines[u["id"]]:
+                        label = agent_label(line.get("section"), index, lang) or section_label(u, titles, lang)
+                        L += [f"- **[{label}]**: {line['ru' if lang == 'rus' else 'en'].strip()}", ""]
                 else:
                     L += rn_block(u, titles, lang, conf[u["id"]]["level"] == "low", decisions.get(u["id"], ""))
         if prev and "\\clearpage" in prev:
