@@ -69,26 +69,48 @@ def unit_dir(uid: str) -> str:
 
 # ---------------------------------------------------------------- очередь
 
+STALE_ID = "STALE"          # условная "задача" для проверки устаревших названий по всему релизу
+
+
 def kinds_for(decision: str, unit: Dict[str, Any]) -> List[str]:
     if decision == "agent":
         return ["decide"]
     if decision == "doc":
         return ["write_doc"]
     if decision == "langs":
-        # устаревшие названия, найденные по файлам этой задачи, проверяются отдельным заданием
-        return ["check_langs"] + (["check_doc"] if unit.get("doc_mentions") else [])
-    if decision == "rn" and unit.get("doc_mentions"):
-        return ["check_doc"]
+        return ["check_langs"]
     return []
 
 
-def build_queue(units: List[Dict[str, Any]], decisions: Dict[str, str], only_kinds: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+def stale_unit(ds, stale: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Собирает из списка устаревших названий условную задачу: у нее те же поля, что у обычной, поэтому
+    задание, источники и проверка ответа работают для нее так же."""
+    if not stale:
+        return None
+    files: Dict[str, Dict[str, Any]] = {}
+    mentions: Dict[str, Dict[str, Any]] = {}
+    for x in stale:
+        for path, patch in zip(x["i18n_files"], x["patches"] + [None] * len(x["i18n_files"])):
+            files.setdefault(path, {"path": path, "relevant": True, "patch": patch, "category": "i18n",
+                                    "status": "modified", "reachable_from_app": True})
+        mentions.setdefault(x["lang"], {})[x["text"]] = x["mentions"]
+    return {"id": STALE_ID, "task": None, "_stale": stale, "entries": [], "files": list(files.values()),
+            "i18n": {"added": [], "changed": [{"locale": x["locale"], "old": x["text"], "new": x["replacement"]}
+                                              for x in stale if x["replacement"]],
+                     "removed": [{"locale": x["locale"], "value": x["text"]} for x in stale if not x["replacement"]]},
+            "doc_candidates": [], "doc_mentions": mentions, "jira": None}
+
+
+def build_queue(units: List[Dict[str, Any]], decisions: Dict[str, str], only_kinds: Optional[List[str]] = None,
+                stale: bool = False) -> List[Dict[str, Any]]:
     """Все задания одним списком: агент проходит их за один раз. Задание decide включает и правку,
     если агент решил, что она нужна, поэтому второго круга заданий нет."""
     items = []
     for u in units:
         for k in kinds_for(decisions.get(u["id"], "skip"), u):
             items.append({"id": f"{unit_dir(u['id'])}__{k}", "unit": u["id"], "kind": k})
+    if stale:
+        items.append({"id": "stale_names", "unit": STALE_ID, "kind": "check_doc"})
     if any(decisions.get(u["id"]) in ("doc", "rn", "langs", "agent") for u in units):
         items.append({"id": "release_notes", "unit": None, "kind": "release_notes"})
     if only_kinds:
@@ -113,7 +135,7 @@ def build_digest(ds, u: Dict[str, Any]) -> str:
     data = ds.data_dir / "code"
     rel = [f for f in u["files"] if f.get("relevant") and f.get("patch") and f["category"] not in DIGEST_SKIP]
     rel.sort(key=lambda f: (DIGEST_ORDER.get(f["category"], 2), f["path"]))
-    L = [f"# Изменения кода по задаче {u['id']}", "",
+    L = [f"# Изменения кода по задаче {u['id']}" if not u.get("_stale") else "# Изменения файлов переводов с устаревшими названиями", "",
          "Только измененные строки: `+` добавлено, `-` удалено. Сначала код приложения, затем тексты интерфейса, "
          "затем стили. Файлы тестов и сборки не показаны.", "",
          "У каждого файла указано, использует ли его приложение POINT 2: это установлено по связям между файлами "
@@ -180,6 +202,8 @@ def unit_pages(ds, u: Dict[str, Any]) -> List[str]:
 # ---------------------------------------------------------------- текст задания
 
 def _unit_context(ds, u: Dict[str, Any], conf: Dict[str, Any], kind: str) -> str:
+    if u.get("_stale"):
+        return _stale_context(ds, u, kind)
     L = [f"## Задача {u['id']}", "", f"Решение правил: {V.rule_text(u)}.", ""]
     flags = conf.get(u["id"], {}).get("flags", [])
     if flags:
@@ -237,6 +261,32 @@ def _unit_context(ds, u: Dict[str, Any], conf: Dict[str, Any], kind: str) -> str
               "Не опирайся на первый ответ как на источник.", "",
               f"Почему нужен второй круг: {first.get('reason') or 'не указано'}", "",
               "Первый ответ:", "", "```json", json.dumps(first.get("answer") or {}, ensure_ascii=False, indent=2)[:6000], "```"]
+    return "\n".join(L)
+
+
+def _stale_context(ds, u: Dict[str, Any], kind: str) -> str:
+    L = ["## Устаревшие названия", "",
+         "Эти тексты были в интерфейсе предыдущей версии, а в новой их нет. Документация их еще упоминает. К "
+         "задачам релиза список не привязан: название могло исчезнуть попутно с любой из них.", ""]
+    for x in u["_stale"]:
+        repl = f"у того же элемента теперь: «{x['replacement']}»" if x["replacement"] else "чем заменено, в данных нет: выясни по патчу"
+        L += [f"### [{x['lang']}] «{x['text']}»", "", f"- было в коде: `{x['where'][0]}`", f"- {repl}", "- упоминания в документации:"]
+        L += [f"    - `docs/MD_{x['lang']}/docs/{m['file']}`:{m['line']}: {m['text'][:160]}" for m in x["mentions"]]
+        L.append("")
+    L += ["## Тексты интерфейса", ""]
+    L += [f"- удален [{x['locale']}]: «{x['value']}»" for x in u["i18n"]["removed"]]
+    L += [f"- изменен [{x['locale']}]: «{x['old']}» -> «{x['new']}»" for x in u["i18n"]["changed"]]
+    pages = unit_pages(ds, u)
+    L += ["", "## Страницы документации этой задачи", "", "Правки можно предлагать только для этих страниц.", ""]
+    L += [f"- `{p}`" for p in pages]
+    L += ["", "## Разрешенные источники", "",
+          "Открывай только эти файлы и страницы из списка выше. В подтверждениях указывай источник точно так, "
+          "как он записан здесь.", "",
+          "- `i18n` - список исчезнувших и измененных текстов (выше)"]
+    srcs = list(unit_sources(ds, u, kind))
+    L.append(f"- `{srcs[0]}` - сводка изменений файлов переводов, в которых были эти тексты")
+    if len(srcs) > 1:
+        L.append(f"- `sources/{unit_dir(u['id'])}/patches/` - полные патчи этих файлов переводов ({len(srcs) - 1})")
     return "\n".join(L)
 
 
@@ -671,12 +721,16 @@ def run_cmd(ds, item: Dict[str, Any], prompt: str, cmd: List[str], timeout: int)
 
 
 def run(ds, units: List[Dict[str, Any]], conf: Dict[str, Any], decisions: Dict[str, str], index: Dict[str, Any], *,
-        dry_run: bool, cmd: Optional[str], redo: bool, timeout: int, recheck: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+        dry_run: bool, cmd: Optional[str], redo: bool, timeout: int, recheck: Optional[Dict[str, str]] = None,
+        stale: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
     """Готовит все задания, проверяет ответы и вносит принятые правки.
 
     Ответ, принятый в прошлый запуск, повторно не проверяется и не вносится: его правки уже в result/.
     """
     by_id = {u["id"]: u for u in units}
+    su = stale_unit(ds, stale or [])
+    if su:
+        by_id[STALE_ID] = su
     command = agent_cmd(cmd)
     launch = bool(command) and not dry_run
     w = workspace(ds)
@@ -686,7 +740,7 @@ def run(ds, units: List[Dict[str, Any]], conf: Dict[str, Any], decisions: Dict[s
     touched = touched_in_workspace(ds)
     docs = Docs(ds)
 
-    queue = build_queue(units, decisions)
+    queue = build_queue(units, decisions, stale=bool(su))
     # второй круг: задания, которые агент сам отметил в прошлый запуск, и те, что назвал человек (--recheck)
     rpath = ds.agent_dir / "recheck.json"
     wanted: Dict[str, str] = load_json(rpath) if rpath.is_file() else {}

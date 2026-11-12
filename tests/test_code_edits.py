@@ -1,6 +1,7 @@
 """Правки, которые код вносит сам: замены названий (Д4) и строки release notes из Jira."""
 
 import json
+import re
 import shutil
 import tempfile
 import unittest
@@ -107,7 +108,7 @@ class JiraQueryTest(unittest.TestCase):
 
 
 class StaleNameTest(unittest.TestCase):
-    """Текст исчез из интерфейса, а документация его упоминает: это находится, даже если запись задачи о другом."""
+    """Название исчезло из интерфейса, а документация его упоминает. Поиск идет по всему релизу, не по задачам."""
 
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
@@ -118,24 +119,57 @@ class StaleNameTest(unittest.TestCase):
         i18n.write_text(i18n.read_text(encoding="utf-8").replace("reset: 'Сбросить', ", ""), encoding="utf-8")
         self.out = self.tmp / "out"
         CLI.main(["collect", str(self.data), "--out", str(self.out)])
+        self.stale = json.loads((self.out / P.OUT_DATA / "05_stale_texts.json").read_text(encoding="utf-8"))
         self.units = {u["id"]: u for u in json.loads((self.out / P.OUT_DATA / "05_units.json").read_text(encoding="utf-8"))["units"]}
 
-    def test_removed_text_is_found_in_docs(self):
-        u = self.units["GUI-105"]
-        self.assertNotIn("Сбросить", " ".join(e["text"] for e in u["entries"]))     # в записи задачи текст не назван
-        hits = u["doc_mentions"]["rus"]["Сбросить"]
-        self.assertEqual([(h["file"], h["line"]) for h in hits], [("user-manual/050_Work.md", 5)])
+    def test_found_without_any_task_naming_it(self):
+        self.assertFalse(any("Сбросить" in e["text"] for u in self.units.values() for e in u["entries"]))
+        self.assertEqual([(x["lang"], x["text"], x["replacement"]) for x in self.stale], [("rus", "Сбросить", None)])
+        self.assertEqual([(m["file"], m["line"]) for m in self.stale[0]["mentions"]], [("user-manual/050_Work.md", 5)])
+        self.assertEqual(self.stale[0]["i18n_files"], ["packages/monokit/features/orders-filter/i18n.ts"])
 
-    def test_agent_gets_the_page_and_the_removed_text(self):
+    def test_not_attached_to_tasks(self):
+        self.assertFalse(any(u.get("doc_mentions") for u in self.units.values()))
+
+    def test_only_quoted_mentions_count(self):
+        # слово в обычном тексте - не название элемента: на странице 100_Orders.md "заказы по статусу" без кавычек
+        self.assertTrue(all("Сбросить" in m["text"] and "«Сбросить»" in m["text"] for m in self.stale[0]["mentions"]))
+
+    def test_shown_in_review_file(self):
+        review = (self.out / V.FILE_NAME).read_text(encoding="utf-8")
+        self.assertIn("## Названия, которых больше нет в интерфейсе", review)
+        self.assertIn("| rus | «Сбросить» | выяснит агент | `user-manual/050_Work.md` (1) |", review)
+
+    def test_one_agent_task_for_the_whole_release(self):
         CLI.main(["agent", str(self.data), "--out", str(self.out), "--approve"])
-        task = (self.out / P.OUT_WORKSPACE / "tasks" / "GUI-105__write_doc.md").read_text(encoding="utf-8")
-        self.assertIn("- удален [ru]: «Сбросить»", task)
-        self.assertIn("старый текст «Сбросить» в документации [rus]: `docs/MD_rus/docs/user-manual/050_Work.md`:5", task)
-        self.assertIn("- `docs/MD_rus/docs/user-manual/050_Work.md`", task)
+        ws = self.out / P.OUT_WORKSPACE
+        task = (ws / "tasks" / "stale_names.md").read_text(encoding="utf-8")
+        self.assertIn("### [rus] «Сбросить»", task)
+        self.assertIn("`docs/MD_rus/docs/user-manual/050_Work.md`:5", task)
+        self.assertIn("- `sources/STALE/changes.md`", task)
+        self.assertIn("сброс: 'Сбросить'", (ws / "sources" / "STALE" / "changes.md").read_text(encoding="utf-8"))
+        self.assertFalse(any("check_doc" in p.name for p in (ws / "tasks").iterdir()))     # заданий check_doc по задачам нет
 
-    def test_one_text_goes_to_one_task_only(self):
-        owners = [uid for uid, u in self.units.items() if "Сбросить" in (u.get("doc_mentions") or {}).get("rus", {})]
-        self.assertEqual(owners, ["GUI-105"])
+    def test_verified_replacement_is_applied(self):
+        CLI.main(["agent", str(self.data), "--out", str(self.out), "--approve"])
+        ws = self.out / P.OUT_WORKSPACE
+        code = re.search(r"`(R-[0-9a-f]{8})`", (ws / "AGENTS.md").read_text(encoding="utf-8")).group(1)
+        page = "docs/MD_rus/docs/user-manual/050_Work.md"
+        (ws / "answers" / "stale_names.json").write_text(json.dumps({
+            "item": "stale_names", "rules": code, "status": "done", "summary": "кнопки больше нет",
+            "steps": [{"source": "sources/STALE/changes.md", "found": "строка reset удалена"}],
+            "edits": [{"file": page, "find": "Нажмите кнопку «Сбросить», чтобы очистить фильтр.", "replace": "Чтобы очистить фильтр, удалите его значение.",
+                       "what": "убрано название кнопки, которой нет в интерфейсе",
+                       "evidence": [{"source": "i18n", "quote": "удален [ru]: «Сбросить»"}]}]}, ensure_ascii=False), encoding="utf-8")
+        try:
+            CLI.main(["agent", str(self.data), "--out", str(self.out), "--approve"])
+        except SystemExit:
+            pass
+        q = {i["id"]: i for i in json.loads((self.out / P.OUT_AGENT / "queue.json").read_text(encoding="utf-8"))["items"]}
+        self.assertEqual(q["stale_names"]["status"], "done", q["stale_names"]["problems"])
+        self.assertIn("Чтобы очистить фильтр, удалите его значение.",
+                      (self.out / P.OUT_RESULT / "MD_rus" / "docs" / "user-manual" / "050_Work.md").read_text(encoding="utf-8"))
+        self.assertIn("| STALE | rus | user-manual/050_Work.md |", (self.out / P.OUT_RESULT / "trace.md").read_text(encoding="utf-8"))
 
 
 class LanguagesFromKnowledgeTest(unittest.TestCase):
