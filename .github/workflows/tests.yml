@@ -23,9 +23,9 @@ jobs:
       - name: Compile
         run: python -m py_compile pipeline/*.py tests/*.py
 
-      - name: Check JSON in knowledge and agent
+      - name: Check JSON in knowledge
         run: |
-          for f in knowledge/*.json agent/*.json tests/data/demo/*.json; do
+          for f in knowledge/*.json tests/data/demo/*.json; do
             python -m json.tool "$f" > /dev/null || { echo "bad JSON: $f"; exit 1; }
           done
 

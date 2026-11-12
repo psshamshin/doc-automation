@@ -96,20 +96,26 @@ def cmd_agent(ds: Dataset, args) -> None:
         log(f"замена кодом: [{r['lang']}] {r['file']}: «{r['old']}» -> «{r['new']}» ({r['unit']})")
     index = load_json(ds.data_dir / "06_docs_index.json")
 
-    def redraft(final):
-        DRAFT.write_release_notes(ds, us, final, conf, index)
-
-    res = AG.run(ds, us, conf, decided, dry_run=args.dry_run, cmd=args.cmd, redo=args.redo,
-                 timeout=args.timeout, on_decided=redraft)
+    # черновик release notes пересобирается по проверенным решениям; строки задач, ожидающих решения
+    # агента, входят в него с пометкой: агент проходит все задания за один раз
+    DRAFT.write_release_notes(ds, us, decided, conf, index)
+    recheck = {k.strip(): (args.note or "") for k in (args.recheck or "").split(",") if k.strip()}
+    res = AG.run(ds, us, conf, decided, dry_run=args.dry_run, cmd=args.cmd, redo=args.redo, timeout=args.timeout,
+                 recheck=recheck)
     save_text(ds.agent_dir / "summary.md", AG.summary_md(ds, res, decided))
     counts = {}
     for i in res["items"]:
         counts[i["status"]] = counts.get(i["status"], 0) + 1
     log("задания агента: " + (", ".join(f"{k} - {v}" for k, v in sorted(counts.items())) or "нет"))
-    if not res["available"] and not args.dry_run:
-        log(f"агент не настроен: задания подготовлены в {ds.agent_dir / 'tasks'}. Запуск: --cmd \"<команда агента>\"")
-    log(f"итог: {ds.agent_dir / 'summary.md'}")
-    if any(i["status"] == "failed" for i in res["items"]):
+    for i in res["items"]:
+        if i["status"] in ("unverified", "failed"):
+            log(f"не принято: {i['id']}: {i['note']}")
+    for r in res["rejected"]:
+        log(f"правка отклонена: {r['file']}: {r['why']}")
+    if not res["launched"]:
+        log(f"агент запускается вручную: откройте в редакторе только папку {AG.workspace(ds)}")
+    log(f"журнал: {ds.agent_dir / 'summary.md'}")
+    if any(i["status"] in ("failed", "unverified") for i in res["items"]) or res["rejected"]:
         raise SystemExit(1)
 
 
@@ -161,6 +167,8 @@ def main(argv: Optional[List[str]] = None) -> None:
     ap.add_argument("--approve", action="store_true", help="agent: считать решения проверенными без отметки в review.md")
     ap.add_argument("--redo", action="store_true", help="agent: выполнить заново уже выполненные задания")
     ap.add_argument("--cmd", help="agent: команда запуска агента; текст задания подается ей на стандартный ввод")
+    ap.add_argument("--recheck", help="agent: отправить задачи на второй круг разбора, через запятую (GUI-4104,GUI-4057)")
+    ap.add_argument("--note", help="agent: что именно проверить на втором круге (вместе с --recheck)")
     ap.add_argument("--reference", help="compare: папка с документацией техписа, если ее нет во входных данных")
     ap.add_argument("--allow-reference", action="store_true",
                     help="agent: запустить, даже если документация техписа лежит в проекте (результат нельзя считать чистым)")
