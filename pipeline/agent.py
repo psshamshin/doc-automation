@@ -159,23 +159,31 @@ def _unit_context(ds, u: Dict[str, Any], conf: Dict[str, Any], kind: str) -> str
     return "\n".join(L)
 
 
+def rules_text(ds) -> str:
+    """Общие правила для агента (AGENTS.md его рабочей папки) без списка заданий."""
+    return (read_text(PROMPTS / "workspace_agents.md") or "").replace("{{RELEASE}}", ds.versions["release"])
+
+
+def rules_code(ds) -> str:
+    """Код общих правил. Агент обязан повторить его в ответе: так видно, что правила он прочитал."""
+    return "R-" + hashlib.sha256(rules_text(ds).replace("{{RULES_CODE}}", "").encode("utf-8")).hexdigest()[:8]
+
+
 def render_task(ds, item: Dict[str, Any], units_by_id: Dict[str, Any], conf: Dict[str, Any], decisions: Dict[str, str]) -> str:
+    """Задание: только данные конкретной задачи. Общие правила и порядок действий лежат в AGENTS.md."""
     v = ds.versions
-    common = read_text(PROMPTS / "_common.md") or ""
-    body = read_text(PROMPTS / f"{item['kind']}.md") or ""
+    head = read_text(PROMPTS / "task.md") or ""
     if item["unit"]:
         ctx = _unit_context(ds, units_by_id[item["unit"]], conf, item["kind"])
     else:
         rows = [f"- {uid}: {V.DECISION_TEXT[d]}" for uid, d in decisions.items() if d in ("doc", "rn", "langs")]
-        ctx = "## Задачи, которые идут в release notes\n\n" + "\n".join(rows)
-    text = "\n\n".join(x.strip() for x in (common, body, ctx) if x.strip()) + "\n"
-    repl = {
-        "{{ITEM}}": item["id"], "{{UNIT}}": item["unit"] or "", "{{ANSWER_FILE}}": f"answers/{item['id']}.json",
-        "{{RELEASE}}": v["release"],
-        "{{RN_FILE}}": f"{P.RELEASE_NOTES_DIR}/{v['release_notes_file']}",
-        "{{RN_PREVIOUS}}": f"{P.RELEASE_NOTES_DIR}/{v['previous_release_notes_file']}",
-    }
-    for k, val in repl.items():
+        rn = f"{P.RELEASE_NOTES_DIR}/{v['release_notes_file']}"
+        prev = f"{P.RELEASE_NOTES_DIR}/{v['previous_release_notes_file']}"
+        ctx = ("## Файлы\n\n" + "\n".join(f"- черновик: `docs/MD_{lang}/docs/{rn}`" for lang in ds.langs) + "\n"
+               + "\n".join(f"- образец прошлого релиза: `docs/MD_{lang}/docs/{prev}`" for lang in ds.langs)
+               + "\n\n## Задачи, которые идут в release notes\n\n" + "\n".join(rows))
+    text = head.strip() + "\n\n" + ctx.strip() + "\n"
+    for k, val in {"{{ITEM}}": item["id"], "{{KIND}}": item["kind"], "{{ANSWER_FILE}}": f"answers/{item['id']}.json"}.items():
         text = text.replace(k, val)
     return text
 
@@ -265,6 +273,10 @@ def check_answer(path: Path, item: Dict[str, Any], ds=None, unit: Optional[Dict[
         return {"ok": False, "error": "в ответе нет полей: " + ", ".join(miss), "answer": a}
     if a["status"] not in STATUSES:
         return {"ok": False, "error": f"неизвестный status: {a['status']}", "answer": a}
+    if ds is not None and str(a.get("rules", "")).strip() != rules_code(ds):
+        return {"ok": False, "unverified": True, "answer": a,
+                "problems": ["в ответе нет кода общих правил: агент не прочитал AGENTS.md в своей папке"],
+                "error": "агент не прочитал общие правила (нет кода из AGENTS.md)"}
     if item["kind"] == "decide" and a["status"] == "done" and a.get("decision") not in ("doc", "rn", "langs", "screens", "skip"):
         return {"ok": False, "error": "для задания decide нужно поле decision: doc, rn, langs, screens или skip", "answer": a}
     if ds is not None and unit is not None and item["kind"] in NEED_EVIDENCE and a["status"] == "done":
@@ -328,7 +340,7 @@ def refresh_workspace(ds, items: List[Dict[str, Any]], prompts: Dict[str, str], 
                 shutil.copyfile(src, t)
     save_json(ds.agent_dir / "workspace_manifest.json", {k: _digest(p) for k, p in _doc_files(w / "docs").items()})
     order = "\n".join(f"{n}. `tasks/{i['id']}.md`" for n, i in enumerate(items, 1)) or "Заданий нет."
-    text = (read_text(PROMPTS / "_workspace.md") or "").replace("{{RELEASE}}", ds.versions["release"]).replace("{{TASKS}}", order)
+    text = rules_text(ds).replace("{{RULES_CODE}}", rules_code(ds)).replace("{{TASKS}}", order)
     save_text(w / "AGENTS.md", text)
 
 

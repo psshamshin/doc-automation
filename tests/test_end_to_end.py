@@ -172,7 +172,15 @@ class AgentTest(unittest.TestCase):
         self.assertNotIn("{{ITEM}}", task)
         for src in re.findall(r"^- `(sources/[^`]+)`$", task, flags=re.M):
             self.assertTrue((self.ws / src).is_file(), src)
-        self.assertIn("1. `tasks/GUI-103__decide.md`", (self.ws / "AGENTS.md").read_text(encoding="utf-8"))
+        rules = (self.ws / "AGENTS.md").read_text(encoding="utf-8")
+        self.assertIn("1. `tasks/GUI-103__decide.md`", rules)
+        for kind in ("decide", "write_doc", "check_doc", "check_langs", "release_notes"):
+            self.assertIn(f"## Вид задания `{kind}`", rules)
+        self.assertNotIn("{{", rules.replace("{{PRODUCT_NAME}}", ""))
+        # общие правила лежат один раз в AGENTS.md, в задании только данные задачи
+        self.assertIn("Вид задания: `write_doc`", task)
+        self.assertNotIn("Правила работы с источниками", task)
+        self.assertLess(len(task), len(rules))
         self.assertIn("Агент запускается вручную", self.summary())
 
     def test_agent_gets_only_what_rules_could_not_do(self):
@@ -225,6 +233,15 @@ class AgentTest(unittest.TestCase):
             s = self.summary()
             self.assertIn("## Отклоненные правки", s)
             self.assertIn("Что не подтверждено:", s)
+
+    def test_answer_without_rules_code_is_not_accepted(self):
+        self.approve(**{"NOTASK:0.10.0#7": 1})
+        with self.assertRaises(SystemExit):
+            run("agent", self.out, "--cmd", f"{STUB} no_rules")
+        item = self.items()["GUI-105__write_doc"]
+        self.assertEqual(item["status"], "unverified")
+        self.assertIn("не прочитал", item["note"])
+        self.assertNotIn("Правка заглушки", (self.out / P.OUT_RESULT / self.page).read_text(encoding="utf-8"))
 
     def test_unverified_decision_is_not_applied(self):
         self.approve(**{"GUI-103": 2})
@@ -282,8 +299,10 @@ class ProjectFilesTest(unittest.TestCase):
 
     def test_every_agent_task_kind_has_a_prompt(self):
         from pipeline import agent as AG
-        for kind in AG.KIND_ORDER + ["_common"]:
-            self.assertTrue((ROOT / "agent" / "prompts" / f"{kind}.md").is_file(), kind)
+        rules = (ROOT / "agent" / "prompts" / "workspace_agents.md").read_text(encoding="utf-8")
+        for kind in AG.KIND_ORDER:
+            self.assertIn(f"## Вид задания `{kind}`", rules)
+        self.assertTrue((ROOT / "agent" / "prompts" / "task.md").is_file())
 
     def test_knowledge_base_has_current_release(self):
         kn = json.loads((ROOT / P.RELEASES_FILE).read_text(encoding="utf-8"))
@@ -374,10 +393,11 @@ class ManualAgentTest(unittest.TestCase):
         run("collect", self.out)
         run("agent", self.out, "--approve")                       # агент не настроен: только задания
         self.answers = self.out / P.OUT_WORKSPACE / "answers"
+        self.code = re.search(r"`(R-[0-9a-f]{8})`", (self.out / P.OUT_WORKSPACE / "AGENTS.md").read_text(encoding="utf-8")).group(1)
 
     def answer(self, evidence):
         (self.answers / "NOTASK_0.10.0_7__decide.json").write_text(json.dumps(
-            {"item": "NOTASK_0.10.0_7__decide", "status": "done", "summary": "сборка, пользователю не видно",
+            {"item": "NOTASK_0.10.0_7__decide", "rules": self.code, "status": "done", "summary": "сборка, пользователю не видно",
              "decision": "skip", "log": ["прочитал запись"], "evidence": evidence}, ensure_ascii=False), encoding="utf-8")
 
     def state(self):

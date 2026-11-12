@@ -5,6 +5,7 @@ ok (по умолчанию) - правит первую страницу зад
 no_answer, bad_json, fail - сбои;
 no_evidence - ответ без подтверждений; fake_quote - цитата, которой нет в источнике;
 foreign_source - ссылка на файл вне разрешенных;
+no_rules - агент не прочитал общие правила (нет кода из AGENTS.md);
 edit_other - кроме своей страницы молча правит чужую; wrong_page - называет измененной чужую страницу.
 """
 
@@ -16,7 +17,8 @@ from pathlib import Path
 mode = sys.argv[1] if len(sys.argv) > 1 else "ok"
 prompt = sys.stdin.read()
 item = re.search(r"^# Задание (\S+)", prompt, flags=re.M).group(1)
-answer = Path(re.search(r"Запиши его в файл `([^`]+)`", prompt).group(1))
+answer = Path(re.search(r"^Файл ответа: `([^`]+)`", prompt, flags=re.M).group(1))
+code = re.search(r"`(R-[0-9a-f]{8})`", Path("AGENTS.md").read_text(encoding="utf-8")).group(1)
 
 if mode == "fail":
     sys.exit(3)
@@ -37,7 +39,7 @@ elif mode == "fake_quote":
 elif mode == "foreign_source":
     ev = [{"source": "docs/MD_rus/docs/index.md", "quote": "Руководство"}]
 
-data = {"item": item, "status": "done", "summary": f"заглушка выполнила {item}", "log": ["прочитал записи задачи"],
+data = {"item": item, "rules": "" if mode == "no_rules" else code, "status": "done", "summary": f"заглушка выполнила {item}", "log": ["прочитал записи задачи"],
         "evidence": ev, "questions": []}
 if item.endswith("__decide"):
     data["decision"] = "rn" if "GUI-103" in item else "skip"
