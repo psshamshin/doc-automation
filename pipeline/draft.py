@@ -41,16 +41,18 @@ def section_label(unit: Dict[str, Any], titles: Dict[str, str], lang: str) -> st
     return P.RN_TITLES[lang]["general"]
 
 
+def jira_title(unit: Dict[str, Any]) -> str:
+    return re.sub(r"^\s*(\[[^\]]+\]\s*)+", "", (unit.get("jira") or {}).get("summary") or "").strip()
+
+
 def rn_source(unit: Dict[str, Any]) -> Dict[str, Any]:
-    """Откуда взят текст строки release notes: название задачи в Jira, иначе значимые записи ченджлога."""
-    jira = unit.get("jira") or {}
-    title = re.sub(r"^\s*(\[[^\]]+\]\s*)+", "", jira.get("summary") or "").strip()
-    if title:
-        return {"source": "Jira", "texts": [title]}
-    return {"source": "список изменений", "texts": significant_texts(unit) or [e["text"].strip() for e in unit["entries"]]}
+    """Текст строки release notes: значимые записи списка изменений. Название задачи в Jira - дополнительно:
+    оно внутреннее ('Доработка страницы ... в Point 3') и для пользователя не годится (изменение 17)."""
+    return {"source": "список изменений", "jira": jira_title(unit),
+            "texts": significant_texts(unit) or [e["text"].strip() for e in unit["entries"]]}
 
 
-PENDING_NOTE = "ожидает решения: оставить строку, только если по задаче решено doc, rn или langs"
+PENDING_NOTE = "ожидает решения агента"
 
 
 def rn_block(unit: Dict[str, Any], titles: Dict[str, str], lang: str, flagged: bool, decision: str = "") -> List[str]:
@@ -182,7 +184,7 @@ def bump_versions(ds, component_versions: List[Dict[str, Any]]) -> List[Dict[str
 
 
 def write_release_notes(ds, units: List[Dict[str, Any]], decisions: Dict[str, str], conf: Dict[str, Any],
-                        index: Dict[str, Any]) -> List[Dict[str, Any]]:
+                        index: Dict[str, Any], final_lines: Optional[Dict[str, Dict[str, str]]] = None) -> List[Dict[str, Any]]:
     """Черновик release notes RU и EN по образцу файла прошлого релиза. Готовый текст (без метки черновика) не трогает."""
     v = ds.versions
     out = []
@@ -190,13 +192,13 @@ def write_release_notes(ds, units: List[Dict[str, Any]], decisions: Dict[str, st
         root = DOCS.workspace_root(ds.result_dir, lang) / P.RELEASE_NOTES_DIR
         target = root / v["release_notes_file"]
         cur = read_text(target)
-        if cur is not None and DRAFT_MARK not in cur:
+        if final_lines is None and cur is not None and DRAFT_MARK not in cur:
             out.append({"lang": lang, "file": f"{P.RELEASE_NOTES_DIR}/{target.name}", "status": "не тронут: метки черновика нет"})
             continue
         prev = read_text(root / v["previous_release_notes_file"]) if v["previous_release_notes_file"] else None
         titles = page_titles(index, lang)
         T = P.RN_TITLES[lang]
-        L: List[str] = [DRAFT_MARK, ""]
+        L: List[str] = [] if final_lines is not None else [DRAFT_MARK, ""]
         date = v["release_date"] or "ДД.ММ.ГГГГ"
         header = f"# [{v['release']}] {date} {{-}}"
         table: List[str] = []
@@ -215,12 +217,13 @@ def write_release_notes(ds, units: List[Dict[str, Any]], decisions: Dict[str, st
             table = [rx.sub(repl, l) for l in table]
         L += [header, ""]
         if table:
-            L += [comp_title or "", "", *table, "",
-                  f"<!-- Версия {P.UI_COMPONENT} подставлена кодом. Остальные версии взяты из прошлого релиза: проверить. -->", ""]
+            L += [comp_title or "", "", *table, ""]
+            if final_lines is None:
+                L += [f"<!-- Версия {P.UI_COMPONENT} подставлена кодом. Остальные версии взяты из прошлого релиза: проверить. -->", ""]
         # задачи, ожидающие решения агента, входят в черновик с пометкой: агент проходит черновик один раз
         def is_fix(u):
             return u["decision"]["action"]["value"] == "rn_and_check_doc"
-        waiting = [u for u in units if decisions.get(u["id"]) == "agent"]
+        waiting = [u for u in units if decisions.get(u["id"]) == "agent"] if final_lines is None else []
         changes = [u for u in units if decisions.get(u["id"]) in ("doc", "langs")] + [u for u in waiting if not is_fix(u)]
         fixes = [u for u in units if decisions.get(u["id"]) == "rn"] + [u for u in waiting if is_fix(u)]
         pending = [u["id"] for u in waiting]
@@ -229,7 +232,12 @@ def write_release_notes(ds, units: List[Dict[str, Any]], decisions: Dict[str, st
                 continue
             L += [f"**{title}**", ""]
             for u in group:
-                L += rn_block(u, titles, lang, conf[u["id"]]["level"] == "low", decisions.get(u["id"], ""))
+                if final_lines is not None:
+                    # итоговый файл: структуру собирает код, формулировку дал агент (изменение 18)
+                    text = final_lines[u["id"]]["ru" if lang == "rus" else "en"].strip()
+                    L += [f"- **[{section_label(u, titles, lang)}]**: {text}", ""]
+                else:
+                    L += rn_block(u, titles, lang, conf[u["id"]]["level"] == "low", decisions.get(u["id"], ""))
         if prev and "\\clearpage" in prev:
             L += ["", "\\clearpage", ""]
         save_text(target, "\n".join(L).rstrip("\n") + "\n")
@@ -240,7 +248,8 @@ def write_release_notes(ds, units: List[Dict[str, Any]], decisions: Dict[str, st
             m = re.search(r"^(\s*-\s*)" + re.escape(v["previous_release_notes_file"]) + r"\s*$", ptxt, flags=re.M)
             if m:
                 save_text(pages, ptxt[:m.start()] + f"{m.group(1)}{target.name}\n" + ptxt[m.start():])
-        out.append({"lang": lang, "file": f"{P.RELEASE_NOTES_DIR}/{target.name}", "status": "черновик собран",
+        out.append({"lang": lang, "file": f"{P.RELEASE_NOTES_DIR}/{target.name}",
+                    "status": "собран из формулировок агента" if final_lines is not None else "черновик собран",
                     "changes": len(changes), "fixes": len(fixes), "pending": pending})
     return out
 

@@ -184,12 +184,10 @@ class AgentTest(unittest.TestCase):
         self.assertNotIn("{{", rules.replace("{{PRODUCT_NAME}}", ""))
         # общие правила лежат один раз в AGENTS.md, в задании только данные задачи
         rn_task = (self.ws / "tasks" / "release_notes.md").read_text(encoding="utf-8")
-        accepted, waiting = rn_task.split("### Задачи, решение по которым принимаешь ты")
-        self.assertIn("- GUI-105:", accepted)
-        self.assertNotIn("GUI-103", accepted)
-        self.assertIn("- GUI-103", waiting)                 # задача, ожидающая решения агента, названа отдельно
-        self.assertIn("- NOTASK:0.10.0#7", waiting)
-        self.assertIn("Состав строк задает черновик", rn_task)
+        self.assertIn("### GUI-105 (изменение)", rn_task)
+        self.assertIn("- запись разработчиков: Добавлен фильтр заказов по дате", rn_task)
+        self.assertIn("### GUI-103 (решение принимаешь ты в задании decide", rn_task)
+        self.assertNotIn("GUI-101", rn_task)                      # отброшенные задачи в задание не попадают
         self.assertIn("Вид задания: `write_doc`", task)
         self.assertNotIn("Правила работы с источниками", task)
         self.assertLess(len(task), len(rules))
@@ -209,18 +207,26 @@ class AgentTest(unittest.TestCase):
         self.assertEqual(q["GUI-105__write_doc"]["log"], ["changelog: прочитал записи задачи"])
         final = json.loads((self.out / P.OUT_AGENT / "final_decisions.json").read_text(encoding="utf-8"))
         self.assertEqual((final["GUI-103"], final["NOTASK:0.10.0#7"]), ("rn", "skip"))
-        # release notes приняты: комментариев нет, строка отброшенной задачи убрана, строка GUI-103 осталась
+        # правку внес код, а не агент: в result/ она есть, запись в trace.md сделана кодом
+        page = (self.out / P.OUT_RESULT / self.page).read_text(encoding="utf-8")
+        self.assertIn("Правка заглушки GUI-105__write_doc.", page)
+        self.assertEqual(q["GUI-105__write_doc"]["applied"], [{"file": "docs/MD_rus/docs/user-manual/100_Orders.md", "what": "добавлена строка"}])
+        self.assertIn("| GUI-105 | rus | user-manual/100_Orders.md | добавлена строка | агент, проверено кодом |",
+                      (self.out / P.OUT_RESULT / "trace.md").read_text(encoding="utf-8"))
+        # release notes собрал код из формулировок агента: структура как в черновике, комментариев нет
         rn = (self.out / P.OUT_RESULT / "MD_rus" / "docs" / "release-notes" / "020.md").read_text(encoding="utf-8")
         self.assertNotIn("<!--", rn)
-        self.assertNotIn("Обновлены зависимости сборки", rn)
+        self.assertIn("# [0.2.0] 01.03.2026 {-}", rn)
+        self.assertRegex(rn, r"\| point-ui\s+\| 0\.10\.0\s+\|")
+        self.assertIn('- **[Раздел "Заказы"]**: Изменение по задаче GUI-105.', rn)
         self.assertIn("**Исправленные ошибки**", rn)
-        self.assertEqual(sum(1 for l in rn.splitlines() if l.startswith("- **[")), 4)
-        # подтвержденная правка перенесена в result/
-        self.assertIn("Правка заглушки GUI-105__write_doc.", (self.out / P.OUT_RESULT / self.page).read_text(encoding="utf-8"))
-        self.assertIn("| GUI-105__write_doc | rus |", (self.out / P.OUT_RESULT / "trace.md").read_text(encoding="utf-8"))
+        self.assertIn("Изменение по задаче GUI-103.", rn)
+        self.assertNotIn("NOTASK", rn)
+        en = (self.out / P.OUT_RESULT / "MD_eng" / "docs" / "release-notes" / "020.md").read_text(encoding="utf-8")
+        self.assertIn('- **["Orders" section]**: Change for task GUI-105.', en)
         s = self.summary()
         self.assertIn("Состояние заданий: принято - 6.", s)
-        self.assertIn("## Принятые правки", s)
+        self.assertIn("Внесено кодом:", s)
         self.assertIn("- GUI-103: строка в release notes", s)
         self.assertNotIn("Агент запускается вручную", s)
 
@@ -231,20 +237,48 @@ class AgentTest(unittest.TestCase):
         self.assertIn("НАЧАЛ GUI-105__write_doc", progress)
         self.assertIn("ГОТОВО release_notes", progress)
         self.assertTrue(all(isinstance(i["seconds"], int) for i in self.items().values()))
-        self.assertIn("| Задание | Состояние | Решение | Время | Итог |", self.summary())
+        self.assertIn("| Задание | Состояние | Решение | Правок внесено | Время | Итог |", self.summary())
+
+    def test_two_tasks_can_edit_the_same_page(self):
+        # GUI-104 и GUI-106 правят одну страницу 050_Work.md: правки вносятся по очереди, обе приняты
+        self.approve(**{"NOTASK:0.10.0#7": 1})
+        run("agent", self.out)
+        task = (self.ws / "tasks" / "GUI-106__write_doc.md").read_text(encoding="utf-8")
+        self.assertIn("docs/MD_rus/docs/user-manual/050_Work.md", task)
+        answers = self.ws / "answers"
+        code = re.search(r"`(R-[0-9a-f]{8})`", (self.ws / "AGENTS.md").read_text(encoding="utf-8")).group(1)
+        page = "docs/MD_rus/docs/user-manual/050_Work.md"
+
+        def answer(item, find, replace, quote):
+            ev = [{"source": "changelog", "quote": quote}]
+            (answers / f"{item}.json").write_text(json.dumps({
+                "item": item, "rules": code, "status": "done", "summary": "правка",
+                "steps": [{"source": "changelog", "found": "запись"}],
+                "edits": [{"file": page, "find": find, "replace": replace, "what": f"правка {item}", "evidence": ev}]},
+                ensure_ascii=False), encoding="utf-8")
+
+        answer("GUI-106__write_doc", "# Работа с системой", "# Работа с системой\n\nПорядок пунктов меню изменен.",
+               "Исправлен порядок пунктов меню")
+        answer("GUI-104__check_langs", "русский, английский.", "русский, английский, испанский, португальский.",
+               "добавлены языки es и pt")
+        run("agent", self.out)                   # остальные задания ждут агента: это не ошибка
+        q = self.items()
+        self.assertEqual((q["GUI-106__write_doc"]["status"], q["GUI-104__check_langs"]["status"]), ("done", "done"))
+        text = (self.out / P.OUT_RESULT / "MD_rus" / "docs" / "user-manual" / "050_Work.md").read_text(encoding="utf-8")
+        self.assertIn("Порядок пунктов меню изменен.", text)
+        self.assertIn("русский, английский, испанский, португальский.", text)
 
     def test_agent_asks_for_second_round(self):
         self.approve(**{"NOTASK:0.10.0#7": 1})
-        run("agent", self.out, "--cmd", f"{STUB} recheck")          # не ошибка: правки приняты, но помечены
+        run("agent", self.out, "--cmd", f"{STUB} recheck")          # не ошибка: правки внесены, но помечены
         q = self.items()
         self.assertEqual(q["GUI-105__write_doc"]["status"], "recheck")
         self.assertEqual(q["GUI-105__write_doc"]["recheck_reason"], "изменение можно понять двумя способами")
         self.assertIn("**Агент просит второй круг**", self.summary())
         self.assertFalse(any("round2" in k for k in q))
-        # следующий запуск после проверки человеком готовит задания второго круга
-        run("agent", self.out, "--cmd", STUB)
+        run("agent", self.out)                                      # после проверки человеком готовится второй круг
         q = self.items()
-        self.assertEqual(q["GUI-105__write_doc__round2"]["status"], "done")
+        self.assertEqual(q["GUI-105__write_doc__round2"]["status"], "prepared")
         task = (self.ws / "tasks" / "GUI-105__write_doc__round2.md").read_text(encoding="utf-8")
         self.assertIn("## Второй круг", task)
         self.assertIn("агент: изменение можно понять двумя способами", task)
@@ -253,57 +287,64 @@ class AgentTest(unittest.TestCase):
     def test_human_sends_task_to_second_round(self):
         self.approve(**{"NOTASK:0.10.0#7": 1})
         run("agent", self.out, "--cmd", STUB)
-        run("agent", self.out, "--cmd", STUB, "--recheck", "GUI-106", "--note", "порядок пунктов описан неверно")
+        run("agent", self.out, "--recheck", "GUI-106", "--note", "порядок пунктов описан неверно")
         q = self.items()
         self.assertIn("GUI-106__write_doc__round2", q)
         self.assertNotIn("GUI-105__write_doc__round2", q)
         task = (self.ws / "tasks" / "GUI-106__write_doc__round2.md").read_text(encoding="utf-8")
         self.assertIn("человек: порядок пунктов описан неверно", task)
 
-    def test_second_run_does_not_call_agent_again(self):
+    def test_second_run_does_not_call_agent_again_and_does_not_apply_twice(self):
         self.approve()
         run("agent", self.out, "--cmd", STUB)
         run("agent", self.out, "--cmd", STUB + " fail")
         self.assertTrue(all(i["status"] == "done" for i in self.items().values()))
+        page = (self.out / P.OUT_RESULT / self.page).read_text(encoding="utf-8")
+        self.assertEqual(page.count("Правка заглушки GUI-105__write_doc."), 1)
+        self.assertEqual((self.out / P.OUT_RESULT / "trace.md").read_text(encoding="utf-8").count("| GUI-105 | rus |"), 1)
 
-    def test_unverified_answers_are_not_accepted(self):
+    def test_unverified_answers_are_not_applied(self):
         self.approve(**{"NOTASK:0.10.0#7": 1})
-        for mode, msg in (("no_evidence", "нет подтверждения"), ("fake_quote", "цитаты нет в источнике changelog"),
-                          ("foreign_source", "источник не входит в разрешенные"), ("no_steps", "нет списка steps"),
-                          ("foreign_step", "открыт файл вне источников задачи"),
-                          ("fake_term", "названия «Несуществующая кнопка» нет"), ("big_edit", "Правка не минимальная")):
+        cases = (("no_evidence", "нет подтверждения"), ("fake_quote", "цитаты нет в источнике changelog"),
+                 ("foreign_source", "источник не входит в разрешенные"), ("no_steps", "нет списка steps"),
+                 ("foreign_step", "открыт файл вне источников задачи"),
+                 ("fake_term", "названия «Несуществующая кнопка» нет"), ("big_edit", "правка слишком большая"),
+                 ("bad_find", "фрагмента find нет на странице"), ("wrong_page", "страница не входит в страницы задания"),
+                 ("comment", "в новом тексте комментарий"), ("no_rules", "не прочитал"))
+        for mode, msg in cases:
             with self.assertRaises(SystemExit) as cm:
                 run("agent", self.out, "--cmd", f"{STUB} {mode}", "--redo")
             self.assertEqual(cm.exception.code, 1)
             item = self.items()["GUI-105__write_doc"]
             self.assertEqual(item["status"], "unverified", mode)
+            self.assertTrue(any(msg in p for p in item["problems"]) or msg in item["note"], (mode, item["problems"]))
+            self.assertEqual(item["applied"], [])
+            self.assertNotIn("Правка заглушки", (self.out / P.OUT_RESULT / self.page).read_text(encoding="utf-8"), mode)
+            self.assertNotIn("GUI-105", (self.out / P.OUT_RESULT / "trace.md").read_text(encoding="utf-8"), mode)
+        s = self.summary()
+        self.assertIn("**Нужно переделать**", s)
+        self.assertIn("Что не подтверждено:", s)
+
+    def test_direct_edit_of_docs_is_ignored_and_reported(self):
+        self.approve(**{"NOTASK:0.10.0#7": 1})
+        run("agent", self.out, "--cmd", f"{STUB} direct")
+        run("agent", self.out)
+        self.assertEqual(self.queue()["touched"], [])                 # после первого запуска папка возвращена
+        self.assertNotIn("Прямая правка", (self.out / P.OUT_RESULT / "MD_rus" / "docs" / "index.md").read_text(encoding="utf-8"))
+        self.assertNotIn("Прямая правка", (self.ws / "docs" / "MD_rus" / "docs" / "index.md").read_text(encoding="utf-8"))
+        # правка из ответа при этом принята
+        self.assertIn("Правка заглушки", (self.out / P.OUT_RESULT / self.page).read_text(encoding="utf-8"))
+
+    def test_release_notes_wording_is_checked(self):
+        self.approve(**{"NOTASK:0.10.0#7": 1})
+        for mode, msg in (("rn_extra", "задач, которые в release notes не идут: GUI-999"), ("rn_code", "имя из кода")):
+            with self.assertRaises(SystemExit):
+                run("agent", self.out, "--cmd", f"{STUB} {mode}", "--redo")
+            item = self.items()["release_notes"]
+            self.assertEqual(item["status"], "unverified", mode)
             self.assertTrue(any(msg in p for p in item["problems"]), (mode, item["problems"]))
-            # правка не дошла до result/, копия отложена, рабочая папка возвращена к принятому состоянию
-            self.assertNotIn("Правка заглушки", (self.out / P.OUT_RESULT / self.page).read_text(encoding="utf-8"))
-            self.assertTrue((self.out / P.OUT_AGENT / "rejected" / "docs" / self.page).is_file())
-            self.assertNotIn("Правка заглушки", (self.ws / "docs" / self.page).read_text(encoding="utf-8"))
-            s = self.summary()
-            self.assertIn("## Отклоненные правки", s)
-            self.assertIn("Что не подтверждено:", s)
-
-    def test_answer_without_rules_code_is_not_accepted(self):
-        self.approve(**{"NOTASK:0.10.0#7": 1})
-        with self.assertRaises(SystemExit):
-            run("agent", self.out, "--cmd", f"{STUB} no_rules")
-        item = self.items()["GUI-105__write_doc"]
-        self.assertEqual(item["status"], "unverified")
-        self.assertIn("не прочитал", item["note"])
-        self.assertNotIn("Правка заглушки", (self.out / P.OUT_RESULT / self.page).read_text(encoding="utf-8"))
-
-    def test_release_notes_with_extra_line_are_not_accepted(self):
-        self.approve(**{"NOTASK:0.10.0#7": 1})
-        with self.assertRaises(SystemExit):
-            run("agent", self.out, "--cmd", f"{STUB} rn_extra")
-        item = self.items()["release_notes"]
-        self.assertEqual(item["status"], "unverified")
-        self.assertTrue(any("строк в release notes: 5, должно быть: 4" in p for p in item["problems"]), item["problems"])
-        rn = (self.out / P.OUT_RESULT / "MD_rus" / "docs" / "release-notes" / "020.md").read_text(encoding="utf-8")
-        self.assertNotIn("Выдуманная строка", rn)
+            rn = (self.out / P.OUT_RESULT / "MD_rus" / "docs" / "release-notes" / "020.md").read_text(encoding="utf-8")
+            self.assertIn(DRAFT.DRAFT_MARK, rn)                       # черновик остался черновиком
 
     def test_unverified_decision_is_not_applied(self):
         self.approve(**{"GUI-103": 2})
@@ -312,24 +353,7 @@ class AgentTest(unittest.TestCase):
         self.assertEqual(self.items()["GUI-103__decide"]["status"], "unverified")
         final = json.loads((self.out / P.OUT_AGENT / "final_decisions.json").read_text(encoding="utf-8"))
         self.assertEqual(final["GUI-103"], "agent")
-
-    def test_edit_of_undeclared_file_is_rejected(self):
-        self.approve(**{"NOTASK:0.10.0#7": 1})
-        with self.assertRaises(SystemExit):
-            run("agent", self.out, "--cmd", f"{STUB} edit_other")
-        rejected = {r["file"]: r["why"] for r in self.queue()["rejected"]}
-        self.assertEqual(list(rejected), ["docs/MD_rus/docs/index.md"])
-        self.assertIn("ни в одном ответе не назван", rejected["docs/MD_rus/docs/index.md"])
-        self.assertNotIn("Лишняя правка", (self.out / P.OUT_RESULT / "MD_rus" / "docs" / "index.md").read_text(encoding="utf-8"))
-        # своя, подтвержденная правка при этом принята
-        self.assertIn("Правка заглушки", (self.out / P.OUT_RESULT / self.page).read_text(encoding="utf-8"))
-
-    def test_edit_of_page_outside_task_is_rejected(self):
-        self.approve(**{"NOTASK:0.10.0#7": 1})
-        with self.assertRaises(SystemExit):
-            run("agent", self.out, "--cmd", f"{STUB} wrong_page")
-        whys = [r["why"] for r in self.queue()["rejected"] if r["file"] == "docs/MD_rus/docs/index.md"]
-        self.assertTrue(whys and "не входит в страницы задания" in whys[0], self.queue()["rejected"])
+        self.assertEqual(self.items()["release_notes"]["status"], "unverified")   # состав строк еще не определен
 
     def test_agent_failures_are_reported(self):
         self.approve(**{"NOTASK:0.10.0#7": 1})
@@ -460,7 +484,8 @@ class ManualAgentTest(unittest.TestCase):
     def answer(self, evidence):
         (self.answers / "NOTASK_0.10.0_7__decide.json").write_text(json.dumps(
             {"item": "NOTASK_0.10.0_7__decide", "rules": self.code, "status": "done", "summary": "сборка, пользователю не видно",
-             "decision": "skip", "steps": [{"source": "changelog", "found": "запись про сборку"}], "evidence": evidence}, ensure_ascii=False), encoding="utf-8")
+             "decision": "skip", "steps": [{"source": "changelog", "found": "запись про сборку"}], "evidence": evidence},
+            ensure_ascii=False), encoding="utf-8")
 
     def state(self):
         q = json.loads((self.out / P.OUT_AGENT / "queue.json").read_text(encoding="utf-8"))
@@ -475,6 +500,12 @@ class ManualAgentTest(unittest.TestCase):
         self.assertEqual(q["GUI-105__write_doc"]["status"], "prepared")
         self.assertEqual(final["NOTASK:0.10.0#7"], "skip")
 
+    def test_quote_copied_with_the_line_prefix_is_accepted(self):
+        # агент часто копирует запись вместе с пометками из задания: это та же запись
+        self.answer([{"source": "changelog", "quote": "[Изменено] [build] Обновлены зависимости сборки"}])
+        run("agent", self.out, "--approve")
+        self.assertEqual(self.state()[0]["NOTASK_0.10.0_7__decide"]["status"], "done")
+
     def test_invented_explanation_is_not_accepted(self):
         self.answer([{"source": "changelog", "quote": "меню изменено и добавлены английские названия"}])
         with self.assertRaises(SystemExit):
@@ -482,8 +513,6 @@ class ManualAgentTest(unittest.TestCase):
         q, final = self.state()
         self.assertEqual(q["NOTASK_0.10.0_7__decide"]["status"], "unverified")
         self.assertEqual(final["NOTASK:0.10.0#7"], "agent")
-
-
 
 
 if __name__ == "__main__":

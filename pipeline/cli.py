@@ -100,8 +100,8 @@ def cmd_agent(ds: Dataset, args) -> None:
     # агента, входят в него с пометкой: агент проходит все задания за один раз
     DRAFT.write_release_notes(ds, us, decided, conf, index)
     recheck = {k.strip(): (args.note or "") for k in (args.recheck or "").split(",") if k.strip()}
-    res = AG.run(ds, us, conf, decided, dry_run=args.dry_run, cmd=args.cmd, redo=args.redo, timeout=args.timeout,
-                 recheck=recheck)
+    res = AG.run(ds, us, conf, decided, index, dry_run=args.dry_run, cmd=args.cmd, redo=args.redo,
+                 timeout=args.timeout, recheck=recheck)
     save_text(ds.agent_dir / "summary.md", AG.summary_md(ds, res, decided))
     counts = {}
     for i in res["items"]:
@@ -110,12 +110,12 @@ def cmd_agent(ds: Dataset, args) -> None:
     for i in res["items"]:
         if i["status"] in ("unverified", "failed"):
             log(f"не принято: {i['id']}: {i['note']}")
-    for r in res["rejected"]:
-        log(f"правка отклонена: {r['file']}: {r['why']}")
+    if res["touched"]:
+        log(f"агент менял файлы документации напрямую ({len(res['touched'])}): эти изменения не учтены")
     if not res["launched"]:
         log(f"агент запускается вручную: откройте в редакторе только папку {AG.workspace(ds)}")
     log(f"журнал: {ds.agent_dir / 'summary.md'}")
-    if any(i["status"] in ("failed", "unverified") for i in res["items"]) or res["rejected"]:
+    if any(i["status"] in ("failed", "unverified") for i in res["items"]):
         raise SystemExit(1)
 
 

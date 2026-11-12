@@ -134,7 +134,7 @@ def render(ds, units: List[Dict[str, Any]], conf: Dict[str, Dict[str, Any]], cod
         c = conf[u["id"]]
         url = task_url(template, u.get("task"))
         name = f"[{u['id']}]({url})" if url else u["id"]
-        why = "; ".join(f"{f['rule']}: {f['short']}" for f in c["flags"] if f["kind"] == "decision") or "-"
+        why = "; ".join(f"{f['rule']}: {f['short']}" for f in c["flags"] if f["kind"] in ("decision", "info")) or "-"
         m = marks.get(u["id"], default_mark(u, c))
         boxes = " | ".join("[x]" if m == k else "[ ]" for k in MARKS)
         L.append(f"| {name} | {summary_of(u)} | {rule_text(u)} | {why} | {boxes} |")
