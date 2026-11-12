@@ -215,18 +215,16 @@ def step_compare(ds: Dataset) -> None:
         g = {f["path"] for f in gen["langs"][lang]["files"]}
         e = {f["path"] for f in etd["langs"][lang]["files"]}
         both, only_g, only_e = sorted(g & e), sorted(g - e), sorted(e - g)
-        todo = []
-        for p in sorted(DOCS.workspace_root(ws, lang).rglob("*.md")):
-            for i, line in enumerate((read_text(p) or "").splitlines(), 1):
-                if "SCREENSHOT-TODO" in line:
-                    todo.append(f"{p.relative_to(DOCS.workspace_root(ws, lang))}:{i}")
+        shots_path = ds.data_dir / "05_doc_checks.json"
+        todo = [f"{x['file']}:{x['line']}" for x in (load_json(shots_path).get("screenshots", []) if shots_path.is_file() else [])
+                if x["lang"] == lang]
         summary[lang] = {"both": both, "only_generated": only_g, "only_reference": only_e, "screenshot_todo": todo,
                          "reference_images_changed": [i["path"] for i in etd["langs"][lang]["images"]]}
         L.append(f"## {lang}\n")
         L.append(f"- Файлы, измененные и пайплайном, и техписом: {len(both)}: " + ", ".join(f"`{p}`" for p in both))
         L.append(f"- Только пайплайн: {len(only_g)}: " + ", ".join(f"`{p}`" for p in only_g))
         L.append(f"- Только техпис: {len(only_e)}: " + ", ".join(f"`{p}`" for p in only_e))
-        L.append(f"- Меток SCREENSHOT-TODO: {len(todo)}; картинок, замененных техписом: {len(summary[lang]['reference_images_changed'])}")
+        L.append(f"- Скриншотов к проверке: {len(todo)}; картинок, замененных техписом: {len(summary[lang]['reference_images_changed'])}")
         L.append("")
     data = CV.build_data(base, ws, eta, ds.langs)
     save_text(out_dir / "compare.html", CV.render_page(data, f"Сравнение: релиз {ds.release}"))

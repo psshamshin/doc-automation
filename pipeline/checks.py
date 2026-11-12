@@ -4,6 +4,7 @@
 2. Названия продуктов текстом: «LUNA», «VisionLabs» вместо переменных документации.
 3. Расхождения языков: страница есть не во всех языках; разное число разделов, строк таблиц, картинок;
    разные значения версий компонентов.
+5. Скриншоты к проверке: изменился текст раздела - скриншоты этого раздела нужно проверить.
 4. Картинки: ссылки на файлы, которых нет; картинки, на которые никто не ссылается; файлы из includes,
    которые никуда не подключены.
 
@@ -172,6 +173,92 @@ def check_parity(roots: Dict[str, Path]) -> List[Dict[str, Any]]:
     return out
 
 
+SCREENSHOT_RE = re.compile(r"^\s*!\[([^\]]*)\]\(([^)\s]+)\)\s*$")
+
+
+def screenshots_to_review(ds, style_pages: Optional[Dict[str, str]] = None) -> List[Dict[str, Any]]:
+    """Скриншоты, которые нужно проверить: сквозная проверка, агент в ней не участвует (изменение 24).
+
+    Правило: если в разделе страницы изменился текст, скриншоты этого раздела считаются затронутыми. Если в
+    самом разделе скриншотов нет, берутся скриншоты раздела уровнем выше, и так до всей страницы. Страница не
+    менялась - ее скриншоты остаются прежними. Скриншотом считается картинка, стоящая отдельной строкой:
+    значки внутри текста не учитываются. Замена номера версии компонента изменением экрана не считается.
+
+    style_pages - страницы задач, по которым решено "изменилось только оформление": текст на них не меняется,
+    поэтому к проверке идут все скриншоты страницы.
+    """
+    import difflib
+    base_repo = ds.slot(P.SLOT_DOCS_OLD)
+    out: List[Dict[str, Any]] = []
+    for lang in ds.langs:
+        old_pages = _pages(DOCS.docs_root(base_repo, lang))
+        new_pages = _pages(DOCS.workspace_root(ds.result_dir, lang))
+        for page in sorted(new_pages):
+            if P.RELEASE_NOTES_DIR in page.split("/"):
+                continue
+            old, new = old_pages.get(page, []), new_pages[page]
+            style_task = (style_pages or {}).get(page)
+            if old == new and not style_task:
+                continue
+            changed: Set[int] = set()
+            for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, old, new, autojunk=False).get_opcodes():
+                if tag == "replace" and i2 - i1 == j2 - j1 and all(
+                        VERSION_RE.sub("", a) == VERSION_RE.sub("", b) for a, b in zip(old[i1:i2], new[j1:j2])):
+                    continue                          # изменился только номер версии компонента
+                if tag in ("replace", "insert"):
+                    changed.update(range(j1, j2))
+                elif tag == "delete":
+                    changed.add(min(j1, len(new) - 1) if new else 0)
+            heads = [(i, len(m.group(1)), new[i].lstrip("#").strip()) for i, l in enumerate(new) for m in [HEADING_RE.match(l)] if m]
+            shots = [(i, m.group(1), m.group(2)) for i, l in enumerate(new) for m in [SCREENSHOT_RE.match(l)] if m]
+
+            def span(idx: int, level: int) -> tuple:
+                """Границы раздела уровня не глубже level, в который попадает строка idx."""
+                start, title = 0, "(начало страницы)"
+                for i, lv, t in heads:
+                    if i <= idx and lv <= level:
+                        start, title, cur = i, t, lv
+                end = len(new)
+                for i, lv, _ in heads:
+                    if i > idx and lv <= level:
+                        end = i
+                        break
+                return start, end, title
+
+            found: Dict[int, Dict[str, Any]] = {}
+            for idx in sorted(changed):
+                for level in (6, 5, 4, 3, 2, 1, 0):
+                    start, end, title = (0, len(new), "(вся страница)") if level == 0 else span(idx, level)
+                    inside = [x for x in shots if start <= x[0] < end]
+                    if inside:
+                        for line, alt, path in inside:
+                            e = found.setdefault(line, {"lang": lang, "file": page, "line": line + 1, "image": path,
+                                                        "caption": alt, "section": title, "changed_lines": 0})
+                            e["changed_lines"] += 1
+                        break
+            if style_task:
+                for line, alt, path in shots:
+                    found.setdefault(line, {"lang": lang, "file": page, "line": line + 1, "image": path, "caption": alt,
+                                            "section": f"вся страница: по задаче {style_task} изменилось оформление",
+                                            "changed_lines": 0})
+            out += [found[k] for k in sorted(found)]
+    return out
+
+
+def render_screenshots(ds, shots: List[Dict[str, Any]]) -> str:
+    L = ["# Скриншоты к проверке", "",
+         "Список собран кодом. Правило: в разделе страницы изменился текст - скриншоты этого раздела нужно "
+         "проверить и при необходимости переснять. Скриншоты страниц и разделов, где текст не менялся, остаются "
+         "прежними. Что изображено на картинке, код не знает: решение, переснимать или нет, принимает человек.", "",
+         "| Язык | Страница | Раздел | Картинка | Подпись | Изменено строк в разделе |", "| --- | --- | --- | --- | --- | --- |"]
+    for x in shots:
+        L.append(f"| {x['lang']} | `{x['file']}`:{x['line']} | {x['section'].replace('|', '/')} | `{x['image']}` | "
+                 f"{x['caption'].replace('|', '/') or '-'} | {x['changed_lines']} |")
+    if not shots:
+        L.append("| - | - | - | - | - | - |")
+    return "\n".join(L) + "\n"
+
+
 CHECKS = [
     ("links", "Битые ссылки", "Ссылка на страницу, раздел или подключаемый файл, которых нет"),
     ("brands", "Названия продуктов текстом", "«LUNA» или «VisionLabs» вне переменных документации"),
@@ -222,6 +309,8 @@ def render_md(ds, res: Dict[str, Any]) -> str:
     for k, title, _ in CHECKS:
         r = res[k]
         L.append(f"| {title} | {len(r['items'])} | {r['new']} | {r['fixed']} |")
+    shots = res.get("screenshots", [])
+    L += ["", f"Скриншотов к проверке: {len(shots)}. Список: `result/screenshots.md`."]
     for k, title, what in CHECKS:
         r = res[k]
         L += ["", f"## {title}", "", what + ".", ""]

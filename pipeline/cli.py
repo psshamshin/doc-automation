@@ -35,18 +35,33 @@ def _review(ds: Dataset):
     return units, conf
 
 
-def run_doc_checks(ds: Dataset) -> dict:
-    """Сквозные проверки результата: пишет checks.md и данные, возвращает итог для файла проверки."""
+def run_doc_checks(ds: Dataset, decisions: Optional[dict] = None) -> dict:
+    """Сквозные проверки результата: пишет checks.md и данные, возвращает итог для файла проверки.
+
+    decisions - решения по задачам: по задачам "только оформление" к проверке идут все скриншоты их страниц.
+    """
     res = CHK.run_checks(ds)
+    style_pages = {}
+    if decisions:
+        for u in load_json(ds.data_dir / "05_units.json")["units"]:
+            if decisions.get(u["id"]) == "screens":
+                for c in u["doc_candidates"]:
+                    style_pages.setdefault(c["doc"], u["id"])
+    res["screenshots"] = CHK.screenshots_to_review(ds, style_pages)
+    save_text(ds.result_dir / "screenshots.md", CHK.render_screenshots(ds, res["screenshots"]))
     save_json(ds.data_dir / "05_doc_checks.json", res)
     save_text(ds.run_dir / "checks.md", CHK.render_md(ds, res))
     return res
 
 
 def cmd_check(ds: Dataset, args) -> None:
-    res = run_doc_checks(ds)
+    fpath = ds.agent_dir / "final_decisions.json"
+    rpath = ds.data_dir / "07_review.json"
+    decisions = load_json(fpath) if fpath.is_file() else (load_json(rpath).get("proposals") if rpath.is_file() else None)
+    res = run_doc_checks(ds, decisions)
     for k, title, _ in CHK.CHECKS:
         log(f"{title}: {len(res[k]['items'])}, из них новое: {res[k]['new']}, исправлено: {res[k]['fixed']}")
+    log(f"скриншотов к проверке: {len(res['screenshots'])}: {ds.result_dir / 'screenshots.md'}")
     log(f"подробно: {ds.run_dir / 'checks.md'}")
 
 
@@ -72,7 +87,7 @@ def cmd_collect(ds: Dataset, args) -> None:
     status = V.write(ds.run_dir / V.FILE_NAME, ds, us, conf, bumps, rn, len(jira), force=args.force,
                      rn_lines=DRAFT.rn_preview(us, proposals, index), renames=renames,
                      jira_extra=DRAFT.jira_extra(jira, us), stale=load_json(ds.data_dir / "05_stale_texts.json"),
-                     checks=run_doc_checks(ds))
+                     checks=run_doc_checks(ds, proposals))
     status_text = {"created": "создан, ждет проверки", "kept": "ваши отметки сохранены",
                    "updated": "обновлен: решения правил изменились, отметка «Проверено» снята"}[status]
     save_json(ds.data_dir / "07_review.json", {"versions": ds.versions, "proposals": proposals, "confidence": conf,
@@ -132,7 +147,7 @@ def cmd_agent(ds: Dataset, args) -> None:
         log(f"агент менял файлы документации напрямую ({len(res['touched'])}): эти изменения не учтены")
     if not res["launched"]:
         log(f"агент запускается вручную: откройте в редакторе только папку {AG.workspace(ds)}")
-    run_doc_checks(ds)                     # после правок агента проверки пересчитываются
+    run_doc_checks(ds, res["final"])       # после правок агента проверки пересчитываются
     log(f"журнал: {ds.agent_dir / 'summary.md'}; сквозные проверки: {ds.run_dir / 'checks.md'}")
     if any(i["status"] in ("failed", "unverified") for i in res["items"]):
         raise SystemExit(1)

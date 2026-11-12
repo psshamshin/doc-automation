@@ -82,6 +82,54 @@ class ParityTest(unittest.TestCase):
         ])
 
 
+class ScreenshotsTest(unittest.TestCase):
+    """Скриншоты к проверке определяет код: изменился текст раздела - скриншоты раздела нужно проверить."""
+
+    PAGE = ("# Заказы\n\nВступление.\n\n![Раздел](../Imgs/image1.png)\n\n## Фильтры\n\nТекст о фильтрах.\n\n"
+            "![Фильтры](../Imgs/image2.png)\n\n## Экспорт\n\nТекст об экспорте со значком ![](../Imgs/icon.png) в строке.\n\n"
+            "### Формат\n\nТекст о формате.\n\n## Версия\n\nUI_VER = 1.0.0\n\n![Настройки](../Imgs/image3.png)\n")
+
+    def setUp(self):
+        from pipeline.layout import Dataset
+        from tests.helpers import DEMO
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.data = self.tmp / "data"
+        shutil.copytree(DEMO, self.data)
+        base = self.data / P.SLOT_DOCS_OLD / "docs/src/MD_rus/docs/user-manual/100_Orders.md"
+        base.write_text(self.PAGE, encoding="utf-8")
+        self.ds = Dataset(str(self.data), out=str(self.tmp / "out"))
+        self.page = self.ds.result_dir / "MD_rus/docs/user-manual/100_Orders.md"
+        self.page.parent.mkdir(parents=True)
+        other = self.ds.result_dir / "MD_rus/docs/index.md"
+        other.write_text((self.data / P.SLOT_DOCS_OLD / "docs/src/MD_rus/docs/index.md").read_text(encoding="utf-8"), encoding="utf-8")
+
+    def shots(self, new_text, **kw):
+        self.page.write_text(new_text, encoding="utf-8")
+        return [(x["image"], x["section"]) for x in CHK.screenshots_to_review(self.ds, **kw) if x["lang"] == "rus"]
+
+    def test_unchanged_page_keeps_its_screenshots(self):
+        self.assertEqual(self.shots(self.PAGE), [])
+
+    def test_change_in_section_marks_only_its_screenshot(self):
+        got = self.shots(self.PAGE.replace("Текст о фильтрах.", "Новый текст о фильтрах."))
+        self.assertEqual(got, [("../Imgs/image2.png", "Фильтры")])
+
+    def test_section_without_screenshot_goes_up_to_the_page(self):
+        # в разделе "Формат" и в его родителе "Экспорт" скриншотов нет (значок в строке не считается):
+        # берутся скриншоты уровнем выше, то есть всей страницы
+        got = self.shots(self.PAGE.replace("Текст о формате.", "Новый текст о формате."))
+        self.assertEqual([g[0] for g in got], ["../Imgs/image1.png", "../Imgs/image2.png", "../Imgs/image3.png"])
+
+    def test_version_bump_is_not_a_screen_change(self):
+        self.assertEqual(self.shots(self.PAGE.replace("UI_VER = 1.0.0", "UI_VER = 2.0.0")), [])
+
+    def test_style_only_task_marks_all_screenshots_of_its_page(self):
+        got = self.shots(self.PAGE, style_pages={"user-manual/100_Orders.md": "GUI-7"})
+        self.assertEqual(len(got), 3)
+        self.assertTrue(all("GUI-7" in g[1] for g in got))
+
+
 class EndToEndTest(unittest.TestCase):
     def setUp(self):
         from tests.helpers import DEMO
@@ -105,6 +153,8 @@ class EndToEndTest(unittest.TestCase):
         review = (self.out / V.FILE_NAME).read_text(encoding="utf-8")
         self.assertIn("## Сквозные проверки документации", review)
         self.assertIn("| Битые ссылки | 1 | 0 |", review)
+        self.assertIn("Скриншотов к проверке сейчас: 0.", review)
+        self.assertIn("# Скриншоты к проверке", (self.out / P.OUT_RESULT / "screenshots.md").read_text(encoding="utf-8"))
 
     def test_problem_introduced_in_this_release_is_marked_new(self):
         page = self.out / P.OUT_RESULT / "MD_rus/docs/user-manual/100_Orders.md"
