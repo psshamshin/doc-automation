@@ -106,6 +106,50 @@ class JiraQueryTest(unittest.TestCase):
         self.assertTrue(q["control"].startswith('project in (ABC, GUI) AND resolved >= "2026-01-10" AND resolved <= "2026-03-01 23:59"'))
 
 
+class StaleNameTest(unittest.TestCase):
+    """Текст исчез из интерфейса, а документация его упоминает: это находится, даже если запись задачи о другом."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.data = self.tmp / "data"
+        shutil.copytree(DEMO, self.data)
+        i18n = self.data / P.SLOT_CODE_NEW / "packages/monokit/features/orders-filter/i18n.ts"
+        i18n.write_text(i18n.read_text(encoding="utf-8").replace("reset: 'Сбросить', ", ""), encoding="utf-8")
+        self.out = self.tmp / "out"
+        CLI.main(["collect", str(self.data), "--out", str(self.out)])
+        self.units = {u["id"]: u for u in json.loads((self.out / P.OUT_DATA / "05_units.json").read_text(encoding="utf-8"))["units"]}
+
+    def test_removed_text_is_found_in_docs(self):
+        u = self.units["GUI-105"]
+        self.assertNotIn("Сбросить", " ".join(e["text"] for e in u["entries"]))     # в записи задачи текст не назван
+        hits = u["doc_mentions"]["rus"]["Сбросить"]
+        self.assertEqual([(h["file"], h["line"]) for h in hits], [("user-manual/050_Work.md", 5)])
+
+    def test_agent_gets_the_page_and_the_removed_text(self):
+        CLI.main(["agent", str(self.data), "--out", str(self.out), "--approve"])
+        task = (self.out / P.OUT_WORKSPACE / "tasks" / "GUI-105__write_doc.md").read_text(encoding="utf-8")
+        self.assertIn("- удален [ru]: «Сбросить»", task)
+        self.assertIn("старый текст «Сбросить» в документации [rus]: `docs/MD_rus/docs/user-manual/050_Work.md`:5", task)
+        self.assertIn("- `docs/MD_rus/docs/user-manual/050_Work.md`", task)
+
+    def test_one_text_goes_to_one_task_only(self):
+        owners = [uid for uid, u in self.units.items() if "Сбросить" in (u.get("doc_mentions") or {}).get("rus", {})]
+        self.assertEqual(owners, ["GUI-105"])
+
+
+class LanguagesFromKnowledgeTest(unittest.TestCase):
+    def test_language_facts_reach_the_agent(self):
+        from pipeline import agent as AG
+        ds = Dataset(str(DEMO))
+        ds.versions["languages_old"] = ["русский", "английский"]
+        ds.versions["languages_new"] = ["русский", "английский", "испанский"]
+        note = "\n".join(AG._languages_note(ds))
+        self.assertIn("добавлены: испанский; убраны: нет", note)
+        ds.versions["languages_new"] = None
+        self.assertEqual(AG._languages_note(ds), [])
+
+
 class RenameTest(unittest.TestCase):
     """Набор данных, в котором подпись 'Статус' переименована в 'Состояние заказа' и это названо в записи."""
 

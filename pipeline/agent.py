@@ -75,7 +75,8 @@ def kinds_for(decision: str, unit: Dict[str, Any]) -> List[str]:
     if decision == "doc":
         return ["write_doc"]
     if decision == "langs":
-        return ["check_langs"]
+        # устаревшие названия, найденные по файлам этой задачи, проверяются отдельным заданием
+        return ["check_langs"] + (["check_doc"] if unit.get("doc_mentions") else [])
     if decision == "rn" and unit.get("doc_mentions"):
         return ["check_doc"]
     return []
@@ -201,6 +202,13 @@ def _unit_context(ds, u: Dict[str, Any], conf: Dict[str, Any], kind: str) -> str
         for needle, found in hits.items():
             L.append(f"- старый текст «{needle}» в документации [{lang}]: "
                      + ", ".join(f"`docs/MD_{lang}/docs/{h['file']}`:{h['line']}" for h in found[:6]))
+    src_files = [f for f in u["files"] if f.get("relevant") and f["category"] == "source"]
+    used = sum(1 for f in src_files if f["reachable_from_app"])
+    L += ["", f"Файлов кода у значимых записей: {len(src_files)}, из них приложение POINT 2 использует: {used}. Это "
+              "установлено по связям между файлами кода: если хотя бы один файл используется, изменение доходит до "
+              "POINT 2. Спрашивать об этом человека не нужно."]
+    if kind == "check_langs":
+        L += [""] + _languages_note(ds)
     pages = unit_pages(ds, u)
     L += ["", "## Страницы документации этой задачи", "", "Правки можно предлагать только для этих страниц.", ""]
     L += [f"- `{p}`" for p in pages] or ["Страницы не определены: если без них задание не выполнить, верни `needs_human`."]
@@ -247,6 +255,29 @@ def _page_outline(ds, u: Dict[str, Any]) -> List[str]:
     return out
 
 
+def index_of(ds) -> Dict[str, Any]:
+    if not hasattr(ds, "_index"):
+        p = ds.data_dir / "06_docs_index.json"
+        ds._index = load_json(p) if p.is_file() else {}
+    return ds._index
+
+
+def _languages_note(ds) -> List[str]:
+    """Языки интерфейса, доступные пользователям, по базе знаний: из кода это не видно (изменение 21)."""
+    v = ds.versions
+    old, new = v.get("languages_old"), v.get("languages_new")
+    if not new:
+        return []
+    L = ["Языки интерфейса, доступные пользователям (из базы знаний, источник `knowledge`):", "",
+         f"- в новом релизе: {', '.join(new)}"]
+    if old:
+        added = [x for x in new if x not in old]
+        removed = [x for x in old if x not in new]
+        L.append(f"- в предыдущем релизе: {', '.join(old)}")
+        L.append("- добавлены: " + (", ".join(added) or "нет") + "; убраны: " + (", ".join(removed) or "нет"))
+    return L + [""]
+
+
 def rules_text(ds) -> str:
     """Общие правила для агента (AGENTS.md его рабочей папки) без списка заданий."""
     return (read_text(PROMPTS / "workspace_agents.md") or "").replace("{{RELEASE}}", ds.versions["release"])
@@ -269,6 +300,9 @@ def render_task(ds, item: Dict[str, Any], units_by_id: Dict[str, Any], conf: Dic
              "этой задачи ниже и то, что ты сам установил по ней в заданиях этого прохода.", ""]
         prev = f"docs/MD_rus/docs/{P.RELEASE_NOTES_DIR}/{v['previous_release_notes_file']}"
         L += [f"Образец стиля: `{prev}` и тот же файл в `docs/MD_eng/`.", ""]
+        L += ["Разделы для поля `section` (выбери тот, к которому относится изменение; если оно общее или касается "
+              "нескольких разделов - «Общее»):", ""] + [f"- {x}" for x in DRAFT.section_choices(index_of(ds))] + [""]
+        L += _languages_note(ds)
         for uid, d in decisions.items():
             if d not in ("doc", "rn", "langs", "agent"):
                 continue
@@ -381,8 +415,8 @@ def verify_answer(ds, u: Dict[str, Any], kind: str, answer: Dict[str, Any], docs
 
     def in_source(src: str, quote: str) -> Optional[bool]:
         """True - цитата есть; False - нет; None - источник не разрешен. Папка источников ищется целиком."""
-        if src in VIRTUAL_SOURCES:
-            return quote in _norm(_virtual_text(u, src)) or quote in printed
+        if src in VIRTUAL_SOURCES or src == "knowledge":
+            return (src != "knowledge" and quote in _norm(_virtual_text(u, src))) or quote in printed
         if src in sources:
             text = read_text(sources[src]) or ""
             return quote in _norm(text) or _norm_code(quote) in _norm_code(text)
@@ -422,7 +456,8 @@ def verify_answer(ds, u: Dict[str, Any], kind: str, answer: Dict[str, Any], docs
             src = str(st.get("source", "")).strip("`") if isinstance(st, dict) else ""
             if not src or not st.get("found"):
                 problems.append(f"шаг {n}: нужны поля source и found")
-            elif src not in VIRTUAL_SOURCES and src not in sources and src not in pages and src not in _own_files(item_id) \
+            elif src not in VIRTUAL_SOURCES + ("knowledge",) and src not in sources and src not in pages \
+                    and src not in _own_files(item_id) \
                     and not any(k.startswith(src.rstrip("/") + "/") for k in sources):
                 problems.append(f"шаг {n}: открыт файл вне источников задачи: {src}")
     if kind == "decide":
@@ -504,33 +539,44 @@ def apply_ops(ds, docs: Docs, uid: str, verified: Dict[str, Any]) -> List[Dict[s
     return verified["ops"]
 
 
-def verify_rn(answer: Dict[str, Any], expected: List[str]) -> Dict[str, Any]:
-    """Release notes: по одной формулировке RU и EN на каждую принятую задачу, без лишних и пропущенных."""
+MAX_RN_LINES_PER_TASK = 4
+
+
+def verify_rn(answer: Dict[str, Any], expected: List[str], sections: List[str], drop_extra: bool = False) -> Dict[str, Any]:
+    """Release notes: у каждой принятой задачи есть хотя бы одна формулировка RU и EN, лишних задач нет.
+
+    Несколько строк на задачу допустимо, если у нее несколько видимых изменений. drop_extra - строки задач,
+    которые после второго круга перестали идти в release notes, молча отбрасываются.
+    """
     problems: List[str] = []
-    lines: Dict[str, Dict[str, str]] = {}
+    lines: Dict[str, List[Dict[str, str]]] = {}
     for n, x in enumerate(answer.get("lines") or [], 1):
         if not isinstance(x, dict) or not x.get("task"):
             problems.append(f"строка {n}: нужны поля task, ru, en")
             continue
         uid = str(x["task"])
-        if uid in lines:
-            problems.append(f"{uid}: строка дана дважды")
-        lines[uid] = {"ru": str(x.get("ru") or "").strip(), "en": str(x.get("en") or "").strip()}
+        row = {"ru": str(x.get("ru") or "").strip(), "en": str(x.get("en") or "").strip(), "section": str(x.get("section") or "").strip()}
+        lines.setdefault(uid, []).append(row)
         for lang in ("ru", "en"):
-            t = lines[uid][lang]
+            t = row[lang]
             if not t or "\n" in t:
                 problems.append(f"{uid}: формулировка {lang} пустая или в несколько строк")
             if "`" in t or "<!--" in t or re.search(r"\b[A-Z][a-z0-9]+(?:[A-Z][a-z0-9]+)+\b", t):
                 problems.append(f"{uid}: в формулировке {lang} осталось имя из кода или служебная пометка")
-        if not re.search(r"[А-Яа-я]", lines[uid]["ru"]) or re.search(r"[А-Яа-я]", lines[uid]["en"]):
+        if not re.search(r"[А-Яа-я]", row["ru"]) or re.search(r"[А-Яа-я]", row["en"]):
             problems.append(f"{uid}: формулировки перепутаны по языкам или не переведены")
+        if row["section"] and row["section"] not in sections:
+            problems.append(f"{uid}: раздела «{row['section']}» нет в списке разделов из задания")
+    for uid, rows in lines.items():
+        if len(rows) > MAX_RN_LINES_PER_TASK:
+            problems.append(f"{uid}: строк {len(rows)}, допускается не больше {MAX_RN_LINES_PER_TASK} на задачу")
     missing = [u for u in expected if u not in lines]
     extra = [u for u in lines if u not in expected]
     if missing:
         problems.append("нет строк для принятых задач: " + ", ".join(missing))
-    if extra:
+    if extra and not drop_extra:
         problems.append("даны строки для задач, которые в release notes не идут: " + ", ".join(extra))
-    return {"problems": problems, "lines": lines}
+    return {"problems": problems, "lines": {u: r for u, r in lines.items() if u in expected}, "dropped": extra if drop_extra else []}
 
 
 def check_answer(path: Path, item: Dict[str, Any], ds=None) -> Dict[str, Any]:
@@ -699,23 +745,18 @@ def run(ds, units: List[Dict[str, Any]], conf: Dict[str, Any], decisions: Dict[s
         r = check_answer(path, item, ds)
         a = r.get("answer") or {}
         item.update(problems=r.get("problems", []), applied=old.get("applied", []) if kept else [], decision=None)
-        if kept:
+        if kept and item["kind"] == "release_notes":
+            item["rn_answer"] = True
+            item.update(status=old["status"], note=old.get("note", ""))
+        elif kept:
             item.update(status=old["status"], note=old.get("note", ""))
             if item["kind"] == "decide" and old.get("decision"):
                 item["decision"] = old["decision"]
         elif r["ok"] and a["status"] == "needs_human":
             item.update(status="needs_human", note=str(a.get("summary", ""))[:300])
         elif r["ok"] and item["kind"] == "release_notes":
-            left = [i["id"] for i in items if i["kind"] == "decide" and i.get("status") in ("prepared", "unverified", "failed")]
-            expected = [u["id"] for u in units if final.get(u["id"]) in ("doc", "rn", "langs")]
-            v = verify_rn(a, expected) if not left else {"problems": ["не завершены задания, от которых зависит состав "
-                                                                     "строк: " + ", ".join(left)], "lines": {}}
-            if v["problems"]:
-                item.update(status="unverified", problems=v["problems"], note="не подтверждено: " + "; ".join(v["problems"][:4]))
-            else:
-                DRAFT.write_release_notes(ds, units, final, conf, index, final_lines=v["lines"])
-                item.update(status=a["status"], note=str(a.get("summary", ""))[:300],
-                            applied=[{"file": f"release notes: строк {len(v['lines'])}", "what": "файлы RU и EN собраны кодом"}])
+            item["rn_answer"] = True
+            item.update(status=a["status"], note=str(a.get("summary", ""))[:300])     # проверяется после всех заданий
         elif r["ok"]:
             v = verify_answer(ds, unit_of(item), item["kind"], a, docs, conf, item["id"])
             if v["problems"]:
@@ -743,6 +784,29 @@ def run(ds, units: List[Dict[str, Any]], conf: Dict[str, Any], decisions: Dict[s
         item["log"] = [f"{st.get('source')}: {st.get('found')}" for st in (a.get("steps") or []) if isinstance(st, dict)][:30]
         item["questions"] = [str(x) for x in (a.get("questions") or [])]
         item["summary"] = str(a.get("summary", ""))[:300]
+
+    # Release notes проверяются и собираются в конце, по итоговым решениям всех кругов. Файл пересобирается при
+    # каждом запуске: если второй круг изменил решение, лишняя строка убирается, а недостающая запрашивается.
+    for item in items:
+        if not item.pop("rn_answer", False):
+            continue
+        a = json.loads(read_text(w / "answers" / f"{item['id']}.json") or "{}")
+        # задание второго круга, которое еще ждет агента, состав строк не блокирует: действует решение первого круга
+        left = [i["id"] for i in items if i["kind"] == "decide" and i.get("round") != 2
+                and i.get("status") in ("prepared", "unverified", "failed")]
+        expected = [u["id"] for u in units if final.get(u["id"]) in ("doc", "rn", "langs")]
+        was_done = prev.get(item["id"], {}).get("status") in STATUSES
+        v = ({"problems": ["не завершены задания, от которых зависит состав строк: " + ", ".join(left)], "lines": {}} if left
+             else verify_rn(a, expected, DRAFT.section_choices(index), drop_extra=was_done))
+        if v["problems"]:
+            item.update(status="unverified", problems=v["problems"], applied=[],
+                        note="не подтверждено: " + "; ".join(v["problems"][:4]))
+        else:
+            DRAFT.write_release_notes(ds, units, final, conf, index, final_lines=v["lines"])
+            n = sum(len(x) for x in v["lines"].values())
+            what = "файлы RU и EN собраны кодом" + (f"; убраны строки задач, решение по которым изменилось: {', '.join(v['dropped'])}"
+                                                     if v.get("dropped") else "")
+            item.update(problems=[], applied=[{"file": f"release notes: задач {len(v['lines'])}, строк {n}", "what": what}])
 
     # время: при ручном запуске оценивается по времени записи файлов ответов
     if not launch:

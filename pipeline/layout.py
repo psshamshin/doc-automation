@@ -286,5 +286,7 @@ class Dataset:
             "release_notes_file": R.release_notes_filename(release),
             "previous_release_notes_file": base["file"] if base else None,
             "previous_components": base["components"] if base else {},
+            "languages_new": rec.get("languages"),
+            "languages_old": (R.find_release(kn, docs_base) or {}).get("languages") if docs_base else None,
             "notes": notes,
         }

@@ -346,6 +346,43 @@ class AgentTest(unittest.TestCase):
             rn = (self.out / P.OUT_RESULT / "MD_rus" / "docs" / "release-notes" / "020.md").read_text(encoding="utf-8")
             self.assertIn(DRAFT.DRAFT_MARK, rn)                       # черновик остался черновиком
 
+    def test_several_lines_per_task_and_section_chosen_by_agent(self):
+        self.approve(**{"NOTASK:0.10.0#7": 1})
+        run("agent", self.out, "--cmd", f"{STUB} rn_two")
+        rn = (self.out / P.OUT_RESULT / "MD_rus" / "docs" / "release-notes" / "020.md").read_text(encoding="utf-8")
+        self.assertIn('- **[Раздел "Заказы"]**: Изменение по задаче GUI-105.', rn)          # раздел по странице задачи
+        self.assertIn("- **[Работа с системой]**: Второе изменение по задаче.", rn)        # раздел выбрал агент
+        en = (self.out / P.OUT_RESULT / "MD_eng" / "docs" / "release-notes" / "020.md").read_text(encoding="utf-8")
+        self.assertIn("- **[Working with the system]**: Second change.", en)              # тот же раздел на английском
+        task = (self.ws / "tasks" / "release_notes.md").read_text(encoding="utf-8")
+        self.assertIn('- Раздел "Заказы"', task)
+        self.assertIn("- Общее", task)
+
+    def test_fix_only_task_goes_to_fixes_section_even_with_doc_edit(self):
+        # GUI-106 - запись из "Исправлено", решение "в доку + RN": в release notes это исправление
+        self.approve(**{"NOTASK:0.10.0#7": 1})
+        run("agent", self.out, "--cmd", STUB)
+        rn = (self.out / P.OUT_RESULT / "MD_rus" / "docs" / "release-notes" / "020.md").read_text(encoding="utf-8")
+        changes, fixes = rn.split("**Исправленные ошибки**")
+        self.assertIn("GUI-106", fixes)
+        self.assertIn("GUI-105", changes)
+
+    def test_release_notes_follow_second_round_decision(self):
+        # первый круг: GUI-103 решена как rn и попала в release notes; второй круг меняет решение на skip
+        self.approve(**{"GUI-103": 2, "NOTASK:0.10.0#7": 1})
+        run("agent", self.out, "--cmd", STUB)
+        rn_path = self.out / P.OUT_RESULT / "MD_rus" / "docs" / "release-notes" / "020.md"
+        self.assertIn("GUI-103", rn_path.read_text(encoding="utf-8"))
+        run("agent", self.out, "--recheck", "GUI-103")
+        code = re.search(r"`(R-[0-9a-f]{8})`", (self.ws / "AGENTS.md").read_text(encoding="utf-8")).group(1)
+        (self.ws / "answers" / "GUI-103__decide__round2.json").write_text(json.dumps({
+            "item": "GUI-103__decide__round2", "rules": code, "status": "done", "summary": "оформление", "decision": "skip",
+            "steps": [{"source": "changelog", "found": "запись"}],
+            "evidence": [{"source": "changelog", "quote": "Удалена лишняя обертка"}]}, ensure_ascii=False), encoding="utf-8")
+        run("agent", self.out)
+        self.assertNotIn("GUI-103", rn_path.read_text(encoding="utf-8"))          # строка убрана без повторного запроса
+        self.assertIn("убраны строки задач, решение по которым изменилось: GUI-103", self.summary())
+
     def test_unverified_decision_is_not_applied(self):
         self.approve(**{"GUI-103": 2})
         with self.assertRaises(SystemExit):
