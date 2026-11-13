@@ -237,6 +237,13 @@ class RejectionTest(AgentCase):
         self.assertIn("и по дате.", self.result())
 
 
+class LaunchFailureTest(AgentCase):
+    def test_failed_launch_is_repeated_before_it_counts_as_a_rejection(self):
+        self.start("--cmd", f"{STUB} fail", **{"NOTASK:0.10.0#7": 1})
+        self.assertTrue((self.out / P.OUT_AGENT / "logs" / "GUI-105__write_doc.log").is_file())
+        self.assertIn("кодом 3", self.items()["GUI-105__write_doc"]["problems"][0])
+
+
 class ChainTest(AgentCase):
     """Решение агента «править документацию» и находки проверок приводят к заданиям, а не теряются."""
 

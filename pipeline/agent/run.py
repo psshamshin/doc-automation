@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -26,6 +27,8 @@ from ..common import ROOT, load_json, log, read_text, save_json, save_text
 from .tasks import (CHECKS_ID, PROMPTS, checks_unit, STALE_ID, agent_cmd, build_queue, render_task, stale_unit, unit_dir, unit_pages, unit_sources,
                     workspace, index_of)
 from .verify import Docs, apply_ops, check_answer, verify_answer, verify_rn
+
+CMD_TRIES = 3                      # запусков команды агента на одно задание при сбое запуска
 
 NAMES = {"done": "принято", "unknown": "агент не нашел фактов", "rejected": "отклонено, нужна повторная попытка",
          "partial": "принято частично, часть правок отклонена", "dropped": "не внесено: отклонено дважды", "prepared": "ждет агента", "waiting": "ждет решений по задачам"}
@@ -122,7 +125,15 @@ def run(ds, units: List[Dict[str, Any]], conf: Dict[str, Any], decisions: Dict[s
             sync_docs(ds)
             write_task(ds, rec, prompts, by_id)
             t0 = time.time()
-            err = run_cmd(ds, rec, prompts[rec["id"]], command, timeout)
+            err = None
+            for n in range(CMD_TRIES):                # сбой запуска (сеть, лимит) - не ошибка ответа: пробуем снова с паузой
+                err = run_cmd(ds, rec, prompts[rec["id"]], command, timeout)
+                if not err or answer_of(rec).exists():
+                    break
+                if n < CMD_TRIES - 1:
+                    pause = int(os.environ.get("DOC_AGENT_PAUSE", "30")) * (n + 1)      # в тестах 0
+                    log(f"агент не отработал ({err}); повтор через {pause} с")
+                    time.sleep(pause)
             seconds[rec["id"]] = int(time.time() - t0)
             if err:
                 errors[rec["id"]] = err
