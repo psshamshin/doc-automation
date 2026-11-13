@@ -2,7 +2,6 @@
 
 * index_docs   — индекс базовой доки: заголовки, картинки, include, термины в кавычках;
 * diff_docs    — дифф двух деревьев доки по языкам (json + html);
-* find_mentions — где в доке встречается строка интерфейса (правило Е3);
 * prepare_workspace — копия текстов базовой доки для правок агентом.
 """
 
@@ -58,30 +57,6 @@ def index_docs(doc_repo: Path, langs: List[str]) -> Dict[str, Any]:
             })
         out[lang] = {"root": str(root), "files": files}
     return out
-
-
-def find_mentions(doc_repo: Path, lang: str, needles: List[str], limit: int = 20) -> Dict[str, List[Dict[str, Any]]]:
-    root = docs_root(doc_repo, lang)
-    texts = {}
-    for rel in walk_files(root):
-        if rel.suffix == ".md":
-            texts[str(rel)] = (read_text(root / rel) or "").splitlines()
-    hits: Dict[str, List[Dict[str, Any]]] = {}
-    for needle in needles:
-        nd = needle.strip()
-        if len(nd) < 3:
-            continue
-        found = []
-        low = nd.lower()
-        for path, lines in texts.items():
-            for i, line in enumerate(lines, 1):
-                if low in line.lower():
-                    found.append({"file": path, "line": i, "text": line.strip()[:240]})
-                    if len(found) >= limit:
-                        break
-        if found:
-            hits[nd] = found
-    return hits
 
 
 # ---------------------------------------------------------------- дифф доки

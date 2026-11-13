@@ -1,17 +1,10 @@
-"""Заглушка агента для тестов. Запускается в рабочей папке агента, читает задание из stdin, пишет ответ.
+"""Заглушка агента для тестов. Запускается в папке агента, читает задание из stdin, пишет ответ.
 
-Правки заглушка возвращает как данные (find/replace), файлы документации не меняет.
-
-Режим задается первым параметром:
-ok (по умолчанию) - правка первой страницы задания, подтвержденная цитатой из записей задачи;
-no_answer, bad_json, fail - сбои;
-no_evidence - ответ без подтверждений; fake_quote - цитата, которой нет в источнике;
-foreign_source - ссылка на файл вне разрешенных; no_steps - нет журнала шагов;
-foreign_step - в шагах файл вне источников задачи; fake_term - выдуманное название элемента интерфейса;
-big_edit - правка длиннее допустимого; bad_find - фрагмента нет на странице; wrong_page - правка чужой страницы;
-comment - в документацию пишется комментарий с вопросом; shot - агент ставит метку скриншота; direct - агент правит файл напрямую;
-rn_extra - в release notes лишняя задача; rn_no_line - последняя задача оставлена без строки с причиной; rn_two - две строки на задачу, вторая с выбранным разделом; rn_code - в формулировке имя из кода;
-recheck - агент просит второй круг; no_rules - агент не прочитал общие правила.
+Правки возвращает как данные (find/replace), файлы документации не меняет.
+Режим - первый параметр: ok (по умолчанию); no_answer, bad_json, fail - сбои; no_evidence, fake_quote, foreign_step,
+no_steps, fake_term, bad_find, wrong_page, comment, big_edit, shot - ответы, которые код должен отклонить;
+unknown - агент не нашел фактов; direct - правит файл документации напрямую; bad_then_ok - первая попытка плохая,
+повторная хорошая; rn_no_line, rn_missing, rn_code - варианты release notes.
 """
 
 import json
@@ -22,8 +15,10 @@ from pathlib import Path
 mode = sys.argv[1] if len(sys.argv) > 1 else "ok"
 prompt = sys.stdin.read()
 item = re.search(r"^# Задание (\S+)", prompt, flags=re.M).group(1)
+kind = re.search(r"Вид задания: `(\w+)`", prompt).group(1)
 answer = Path(re.search(r"^Файл ответа: `([^`]+)`", prompt, flags=re.M).group(1))
-code = re.search(r"`(R-[0-9a-f]{8})`", Path("AGENTS.md").read_text(encoding="utf-8")).group(1)
+if mode == "bad_then_ok":
+    mode = "ok" if "Повторная попытка" in prompt else "fake_quote"
 
 if mode == "fail":
     sys.exit(3)
@@ -37,61 +32,42 @@ if mode == "bad_json":
 m = re.search(r"^- \[[^\]]+\] \[[^\]]*\] \[.*?\] (.+)$", prompt, flags=re.M)
 quote = m.group(1).strip()[:60] if m else ""
 ev = [{"source": "changelog", "quote": quote}] if quote else []
-if mode == "no_evidence":
-    ev = []
-elif mode == "fake_quote":
-    ev = [{"source": "changelog", "quote": "такой фразы в записях задачи нет"}]
-elif mode == "foreign_source":
-    ev = [{"source": "docs/MD_rus/docs/index.md", "quote": "Руководство"}]
-
-data = {"item": item, "rules": "" if mode == "no_rules" else code, "status": "done",
-        "summary": f"заглушка выполнила {item}",
+ev = {"no_evidence": [], "fake_quote": [{"source": "changelog", "quote": "такой фразы в записях задачи нет"}]}.get(mode, ev)
+data = {"status": "done", "summary": f"заглушка выполнила {item}", "evidence": ev, "questions": ["замечание"],
         "steps": [] if mode == "no_steps" else [{"source": "docs/TODO.md" if mode == "foreign_step" else "changelog",
-                                                  "found": "прочитал записи задачи"}],
-        "evidence": ev, "questions": []}
+                                                  "found": "прочитал записи задачи"}]}
 with open("progress.md", "a", encoding="utf-8") as f:
-    f.write(f"НАЧАЛ {item}\nГОТОВО {item}: done - заглушка\n")
-if mode == "recheck" and not item.endswith("__round2") and item != "release_notes":
-    data["status"] = "recheck"
-    data["recheck_reason"] = "изменение можно понять двумя способами"
-if "__decide" in item:
+    f.write(f"НАЧАЛ {item}\nГОТОВО {item}\n")
+if mode == "unknown":
+    data["status"] = "unknown"
+if kind == "decide":
     data["decision"] = "rn" if "GUI-103" in item else "skip"
-if "__write_doc" in item:
-    pages = re.findall(r"^- `(docs/MD_[^`]+)`$", prompt, flags=re.M)
-    page = pages[0]
+if kind == "write_doc" and mode != "unknown":
+    page = re.findall(r"^- `(docs/MD_[^`]+)`$", prompt, flags=re.M)[0]
     first = Path(page).read_text(encoding="utf-8").splitlines()[0]
     new = first + f"\n\nПравка заглушки {item}."
-    if mode == "fake_term":
-        new += "\nНажмите кнопку «Несуществующая кнопка»."
-    if mode == "big_edit":
-        new += "".join(f"\nЛишняя строка {n}." for n in range(40))
-    if mode == "shot":
-        new += '\n!!! warning "SCREENSHOT-TODO GUI-1"\n    Переснять: экран.'
-    if mode == "comment":
-        new += "\n<!-- TODO: уточнить у разработчиков -->"
+    new += {"fake_term": "\nНажмите кнопку «Несуществующая кнопка».", "comment": "\n<!-- вопрос -->",
+            "shot": '\n!!! warning "SCREENSHOT-TODO GUI-1"', "big_edit": "".join(f"\nСтрока {n}." for n in range(40))}.get(mode, "")
     find = "такой строки на странице нет" if mode == "bad_find" else first
     if mode == "wrong_page":
         page = "docs/MD_rus/docs/index.md"
         find = Path(page).read_text(encoding="utf-8").splitlines()[0]
     if mode == "direct":
         other = Path("docs/MD_rus/docs/index.md")
-        other.write_text(other.read_text(encoding="utf-8") + "\nПрямая правка мимо ответа.\n", encoding="utf-8")
+        other.write_text(other.read_text(encoding="utf-8") + "\nПрямая правка.\n", encoding="utf-8")
     data["edits"] = [{"file": page, "find": find, "replace": new, "what": "добавлена строка", "evidence": ev}]
-if item == "release_notes":
+if kind == "release_notes":
     tasks = re.findall(r"^### (\S+) \((.*)\)$", prompt, flags=re.M)
     lines = []
     for uid, state in tasks:
         if "решение принимаешь ты" in state and uid != "GUI-103":
-            continue                          # заглушка решает skip по всем задачам, кроме GUI-103
-        ru = f"Изменение по задаче {uid}." if mode != "rn_code" else "Переведено на resetFilters из `useFilters`."
-        lines.append({"task": uid, "ru": ru, "en": f"Change for task {uid}."})
-        if mode == "rn_two" and uid == "GUI-105":
-            lines.append({"task": uid, "section": "Работа с системой", "ru": "Второе изменение по задаче.", "en": "Second change."})
+            continue                          # заглушка решает skip по всем спорным задачам, кроме GUI-103
+        ru = "Переведено на resetFilters из `useFilters`." if mode == "rn_code" else f"Изменение по задаче {uid}."
+        lines.append({"task": uid, "section": "Общее", "ru": ru, "en": f"Change for task {uid}."})
+    data = {"lines": lines}
     if mode == "rn_no_line":
         skipped = lines.pop()
         data["no_line"] = [{"task": skipped["task"], "reason": "пользователю не видно"}]
-    if mode == "rn_extra":
-        lines.append({"task": "GUI-999", "ru": "Выдуманная строка.", "en": "Invented line."})
-    data["lines"] = lines
+    if mode == "rn_missing":
+        lines.pop()
 answer.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-print(json.dumps({"result": "ok"}))

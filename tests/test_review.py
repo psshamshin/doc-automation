@@ -68,7 +68,7 @@ class ReviewFileTest(unittest.TestCase):
         self.path = Path(tempfile.mkdtemp()) / V.FILE_NAME
 
     def write(self, **kw):
-        return V.write(self.path, self.ds, self.units, self.conf, [], [], 0, **kw)
+        return V.write(self.path, self.ds, self.units, self.conf, [], 0, **kw)
 
     def text(self):
         return self.path.read_text(encoding="utf-8")
@@ -142,7 +142,7 @@ class ReviewFileTest(unittest.TestCase):
         self.assertEqual(V.jira_template(self.ds), "")   # в придуманных данных ссылки отключены
         ds = Dataset(str(DEMO))
         ds.overrides = {"jira_task_url": "https://jira.example/browse/{key}"}
-        self.assertIn("| [GUI-105](https://jira.example/browse/GUI-105) |", V.render(ds, self.units, self.conf, [], [], 0))
+        self.assertIn("| [GUI-105](https://jira.example/browse/GUI-105) |", V.render(ds, self.units, self.conf, [], 0))
 
 
 if __name__ == "__main__":

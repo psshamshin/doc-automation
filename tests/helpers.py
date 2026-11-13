@@ -37,3 +37,48 @@ def demo_units():
     units = U.build_units(cl, code, reach, rows_old, rows_new, lambda a, b: I18N.diff_strings(a, b, locs),
                           [], {}, RULES, DOC_MAP)
     return {u["id"]: u for u in units}
+
+
+# ---------------------------------------------------------------- запуск команд и разметка review.md
+
+import re
+import shutil
+import sys
+import tempfile
+import unittest
+
+from pipeline import cli as CLI
+from pipeline import validation as V
+
+STUB = f"{sys.executable} {ROOT / 'tests' / 'stub_agent.py'}"
+
+
+def run(command, out, *extra, data=DEMO):
+    CLI.main([command, str(data), "--out", str(out), *extra])
+
+
+def mark_review(out, **marks):
+    """Ставит 'Проверено' и переставляет отметки: 0 - принять, 1 - отклонить, 2 - агенту."""
+    p = Path(out) / V.FILE_NAME
+    lines = p.read_text(encoding="utf-8").replace("Проверено: [ ]", "Проверено: [x]").splitlines()
+    for uid, column in marks.items():
+        for i, line in enumerate(lines):
+            if line.startswith("|") and uid in line.split("|")[1]:
+                cells = line.rstrip("|").split("|")
+                cells[-3:] = [" [x] " if n == column else " [ ] " for n in range(3)]
+                lines[i] = "|".join(cells) + "|"
+    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+class Workdir(unittest.TestCase):
+    """Копия придуманных данных и папка результатов во временной папке."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.data = self.tmp / "data"
+        shutil.copytree(DEMO, self.data)
+        self.out = self.tmp / "out"
+
+    def cli(self, command, *extra):
+        CLI.main([command, str(self.data), "--out", str(self.out), *extra])
