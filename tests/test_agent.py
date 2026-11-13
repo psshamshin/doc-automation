@@ -237,6 +237,13 @@ class RejectionTest(AgentCase):
         self.assertIn("и по дате.", self.result())
 
 
+class LaunchFailureTest(AgentCase):
+    def test_failed_launch_is_repeated_before_it_counts_as_a_rejection(self):
+        self.start("--cmd", f"{STUB} fail", **{"NOTASK:0.10.0#7": 1})
+        self.assertTrue((self.out / P.OUT_AGENT / "logs" / "GUI-105__write_doc.log").is_file())
+        self.assertIn("кодом 3", self.items()["GUI-105__write_doc"]["problems"][0])
+
+
 class ChainTest(AgentCase):
     """Решение агента «править документацию» и находки проверок приводят к заданиям, а не теряются."""
 
@@ -265,17 +272,21 @@ class ChainTest(AgentCase):
         self.start("--cmd", STUB, **{"NOTASK:0.10.0#7": 1})
         task = (self.ws / "tasks/checks_fix.md").read_text(encoding="utf-8")
         self.assertIn("нет файла картинки", task)
-        page = "docs/MD_eng/docs/user-manual/100_Orders.md"
-        line = next(l for l in (self.ws / page).read_text(encoding="utf-8").splitlines() if "image001.png" in l)
-        data = {"edits": [{"file": page, "find": line + "\n", "replace": "", "what": "убрана ссылка на картинку без файла",
-                           "evidence": [{"source": page, "quote": line}]}]}
+        edits = []
+        for lang in ("eng", "rus"):
+            page = f"docs/MD_{lang}/docs/user-manual/100_Orders.md"
+            line = next(l for l in (self.ws / page).read_text(encoding="utf-8").splitlines() if "image001.png" in l)
+            edits.append({"file": page, "find": line + "\n", "replace": "", "what": "убрана ссылка на картинку без файла",
+                          "evidence": [{"source": page, "quote": line}]})
+        data = {"edits": edits}
         self.answer("checks_fix", **data)
         self.cli("agent")
         q = self.items()["checks_fix"]
-        self.assertEqual((q["status"], len(q["applied"])), ("done", 1), q["problems"])
+        self.assertEqual((q["status"], len(q["applied"])), ("done", 2), q["problems"])
         self.assertNotIn("image001.png", self.result("MD_eng/docs/user-manual/100_Orders.md"))
         self.cli("agent")                                                          # находок больше нет, запись сохраняется
         self.assertEqual(self.items()["checks_fix"]["status"], "done")
+        self.assertTrue((self.ws / "tasks/checks_fix.md").is_file())
 
 
 class QuoteTest(AgentCase):

@@ -1,5 +1,6 @@
 """Общее для тестов: пути и сборка задач на придуманных данных (без записи на диск)."""
 
+import os
 from pathlib import Path
 
 from pipeline import changelog as CL
@@ -42,6 +43,7 @@ def demo_units():
 # ---------------------------------------------------------------- запуск команд и разметка review.md
 
 import re
+import os
 import shutil
 import sys
 import tempfile
@@ -68,6 +70,9 @@ def mark_review(out, **marks):
                 cells[-3:] = [" [x] " if n == column else " [ ] " for n in range(3)]
                 lines[i] = "|".join(cells) + "|"
     p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+os.environ["DOC_AGENT_PAUSE"] = "0"
 
 
 class Workdir(unittest.TestCase):
