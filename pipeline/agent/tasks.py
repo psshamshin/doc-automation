@@ -74,11 +74,25 @@ def stale_unit(ds, stale: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
 
 # ---------------------------------------------------------------- источники задачи
 
+LINK_RANK = (("тег →", 0, "по тегу записи"), ("имя", 1, "по имени в записи"), ("путь по тегу", 2, "по части пути тега"))
+
+
+def link_kind(f: Dict[str, Any]) -> tuple:
+    """Как файл привязан к задаче: (надежность, подпись). Чем меньше число, тем надежнее связь."""
+    best = (3, "")
+    for text in f.get("linked_by", []):
+        for key, rank, label in LINK_RANK:
+            if key in text.split(": ", 1)[-1][:14] and rank < best[0]:
+                best = (rank, label)
+    return best if best[1] else (0, "")
+
+
 def build_digest(ds, u: Dict[str, Any]) -> str:
     """Сводка изменений кода по задаче: только добавленные и удаленные строки из патчей, дословно."""
     data = ds.data_dir / "code"
     rel = [f for f in u["files"] if f.get("relevant") and f.get("patch") and f["category"] not in DIGEST_SKIP]
-    rel.sort(key=lambda f: (DIGEST_ORDER.get(f["category"], 2), f["path"]))
+    # сначала файлы с самой надежной связью с задачей, затем код приложения, тексты интерфейса, стили
+    rel.sort(key=lambda f: (link_kind(f)[0], DIGEST_ORDER.get(f["category"], 2), f["path"]))
     stale = bool(u.get("_stale"))
     L = ["# Изменения файлов, связанных с устаревшими названиями" if stale else f"# Изменения кода по задаче {u['id']}", "",
          "Только измененные строки: `+` добавлено, `-` удалено."
@@ -97,6 +111,8 @@ def build_digest(ds, u: Dict[str, Any]) -> str:
             note = ", файл другого продукта"
         else:
             note = ", используется приложением POINT 2" if f["reachable_from_app"] else ", приложение POINT 2 этот файл не использует"
+        link = link_kind(f)[1]
+        note += f", связь с задачей: {link}" if link and not stale else ""
         L += [f"## {f['path']} [{f['category']}, {f['status']}{note}]", "", "```diff", *cut, "```"]
         if len(cut) < len(lines):
             L.append(f"Показано строк: {len(cut)} из {len(lines)}. Полностью: `patches/{Path(f['patch']).name}`.")
@@ -118,8 +134,7 @@ def unit_sources(ds, u: Dict[str, Any]) -> Dict[str, Path]:
     """Источники задачи: путь в папке агента -> настоящий файл. Первой идет сводка, затем патчи."""
     base = f"sources/{unit_dir(u['id'])}"
     digest = ds.data_dir / "agent_digest" / f"{unit_dir(u['id'])}.md"
-    if not digest.is_file():
-        save_text(digest, build_digest(ds, u))
+    save_text(digest, build_digest(ds, u))           # всегда заново: привязка файлов к задаче могла измениться
     out: Dict[str, Path] = {f"{base}/changes.md": digest}
     for f in u["files"]:
         if f.get("relevant") and f.get("patch"):
@@ -214,6 +229,9 @@ def _stale_context(ds, u: Dict[str, Any]) -> str:
         L += [f"### [{x['lang']}] «{x['text']}»", "", f"- ключ перевода: `{x['where'][0]}`", f"- {repl}"]
         if x["used_in"]:
             L.append("- использовалось в: " + ", ".join(f"`{p}`" for p in x["used_in"][:6]))
+        else:
+            L.append("- использование ключа в коде прежней версии не найдено: возможно, ключ не использовался; "
+                     "правь, только если по патчам видно, какой элемент интерфейса заменил название")
         L.append("- упоминания в документации:")
         L += [f"    - `docs/MD_{x['lang']}/docs/{m['file']}`:{m['line']}: {m['text'][:160]}" for m in x["mentions"]]
         L.append("")
@@ -256,7 +274,7 @@ def render_task(ds, item: Dict[str, Any], units_by_id: Dict[str, Any], conf: Dic
         body = _unit_context(ds, units_by_id[item["unit"]], conf)
     retry = ""
     if item.get("retry_of"):
-        retry = ("\n## Повторная попытка\n\nПервый ответ не принят. Причины:\n\n" + "\n".join(f"- {p}" for p in item["problems_before"][:12])
-                 + "\n\nИсправь только названное и запиши ответ заново. Это последняя попытка: если ответ снова не пройдет "
-                   "проверку, ничего не будет внесено.\n")
+        retry = ("\n## Повторная попытка\n\nЧасть первого ответа не принята; принятое уже внесено, повторять его "
+                 "не нужно. Причины:\n\n" + "\n".join(f"- {p}" for p in item["problems_before"][:12])
+                 + "\n\nВ новом ответе дай только отклоненные правки или строки. Это последняя попытка.\n")
     return head.strip() + "\n" + retry + "\n" + body.strip() + "\n"

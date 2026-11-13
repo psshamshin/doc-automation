@@ -144,13 +144,16 @@ def check_answer(path: Path, item: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def verify_answer(ds, u: Dict[str, Any], kind: str, answer: Dict[str, Any], docs: Docs, conf: Dict[str, Any], item_id: str) -> Dict[str, Any]:
-    """Сверяет ответ с реальными данными. Возвращает нарушения и правки, готовые к внесению.
+    """Сверяет ответ с реальными данными: каждая правка проверяется отдельно, плохая правка не губит остальные.
 
-    Проверяется: шаги ссылаются только на источники задачи; каждое утверждение и правка подтверждены цитатой;
-    страница правки входит в страницы задачи; заменяемый фрагмент есть на ней ровно один раз; новый текст не
-    длиннее MAX_EDIT_LINES строк, без комментариев и меток скриншотов; названия в кавычках существуют в интерфейсе.
+    Правка принимается, если: страница входит в страницы задачи; заменяемый фрагмент есть на ней ровно один раз;
+    новый текст не длиннее MAX_EDIT_LINES строк, без комментариев и меток скриншотов; названия в кавычках существуют в
+    интерфейсе; есть дословная цитата из источников задачи. Правки проверяются по порядку на копии страницы:
+    вторая видит результат первой. Решение (для decide) принимается, если подтверждено цитатой.
+
+    Возвращает: ops - принятые правки; bad - отклоненные правки с причинами; decision_problems - причины, по которым
+    решение не принято; notes - замечания (шаги ссылаются на файлы вне источников): на прием не влияют.
     """
-    problems: List[str] = []
     approx: List[str] = []
     sources, pages = unit_sources(ds, u), unit_pages(ds, u)
     printed = _stale_context(ds, u) if u.get("_stale") else _unit_context(ds, u, conf)       # как напечатано в задании
@@ -172,94 +175,93 @@ def verify_answer(ds, u: Dict[str, Any], kind: str, answer: Dict[str, Any], docs
         inside = [p for k, p in sources.items() if k.startswith(src.rstrip("/") + "/")]
         return any(found(quote, read_text(p) or "", code=True) for p in inside) if inside else None
 
-    def check_ev(ev: Any, where: str) -> None:
-        if not isinstance(ev, dict) or not ev.get("source") or not ev.get("quote"):
-            problems.append(f"{where}: подтверждение должно быть объектом с полями source и quote")
-            return
-        raw, src = str(ev["quote"]), str(ev["source"]).strip("`")
-        if len(_norm(raw)) < 3:
-            problems.append(f"{where}: цитата слишком короткая")
-            return
-        ok = in_source(src, raw)
-        if ok is None:
-            problems.append(f"{where}: источник не входит в разрешенные для этой задачи: {src}")
-        elif not ok:
-            problems.append(f"{where}: цитаты нет в источнике {src}: «{_norm(raw)[:80]}»")
-
-    def check_list(evs: Any, where: str) -> None:
+    def evidence_problems(evs: Any) -> List[str]:
         if not isinstance(evs, list) or not evs:
-            problems.append(f"{where}: нет подтверждения")
-            return
+            return ["нет подтверждения"]
+        out = []
         for n, ev in enumerate(evs, 1):
-            check_ev(ev, f"{where}, подтверждение {n}")
+            if not isinstance(ev, dict) or not ev.get("source") or not ev.get("quote"):
+                out.append(f"подтверждение {n}: нужны поля source и quote")
+                continue
+            raw, src = str(ev["quote"]), str(ev["source"]).strip("`")
+            if len(_norm(raw)) < 3:
+                out.append(f"подтверждение {n}: цитата слишком короткая")
+                continue
+            ok = in_source(src, raw)
+            if ok is None:
+                out.append(f"подтверждение {n}: источник не входит в разрешенные для этой задачи: {src}")
+            elif not ok:
+                out.append(f"подтверждение {n}: цитаты нет в источнике {src}: «{_norm(raw)[:80]}»")
+        return out
 
+    notes: List[str] = []
     steps = answer.get("steps")
     if not isinstance(steps, list) or not steps:
-        problems.append("шаги: нет списка steps - что открыл и что там нашел")
+        notes.append("шаги: нет списка steps")
     else:
         own = (f"tasks/{item_id}.md", "AGENTS.md", "progress.md")
         for n, st in enumerate(steps, 1):
             src = str(st.get("source", "")).strip("`") if isinstance(st, dict) else ""
-            if not src or not st.get("found"):
-                problems.append(f"шаг {n}: нужны поля source и found")
-            elif src not in VIRTUAL_SOURCES and src not in sources and src not in pages and src not in own \
+            if src and src not in VIRTUAL_SOURCES and src not in sources and src not in pages and src not in own \
                     and not any(k.startswith(src.rstrip("/") + "/") for k in sources):
-                problems.append(f"шаг {n}: открыт файл вне источников задачи: {src}")
-    if kind == "decide":
-        check_list(answer.get("evidence"), "решение")
+                notes.append(f"шаг {n}: открыт файл вне источников задачи: {src}")
+    decision_problems = evidence_problems(answer.get("evidence")) if kind == "decide" else []
 
     ops: List[Dict[str, Any]] = []
+    bad: List[Dict[str, Any]] = []
     staged: Dict[str, str] = {}
     edits = answer.get("edits") or []
     if not isinstance(edits, list):
-        problems.append("edits должен быть списком")
+        bad.append({"n": 0, "file": "", "what": "", "problems": ["edits должен быть списком"]})
         edits = []
     for n, e in enumerate(edits, 1):
-        where = f"правка {n}"
+        entry = {"n": n, "file": str(e.get("file", "")) if isinstance(e, dict) else "", "what": str(e.get("what", ""))[:80] if isinstance(e, dict) else "",
+                 "problems": []}
+        probs = entry["problems"]
         if not isinstance(e, dict) or not all(isinstance(e.get(k), str) and e.get(k) for k in ("file", "find", "what")) \
                 or not isinstance(e.get("replace"), str):
-            problems.append(f"{where}: нужны поля file, find, replace, what")
+            probs.append("нужны поля file, find, replace, what")
+            bad.append(entry)
             continue
-        f = e["file"].strip("`")
-        where = f"правка {n} ({f})"
-        if f not in pages:
-            problems.append(f"{where}: страница не входит в страницы задания")
-            continue
-        text = staged.get(f, docs.text(f))
-        if text is None:
-            problems.append(f"{where}: страницы нет")
-            continue
+        f = entry["file"] = e["file"].strip("`")
+        text = staged.get(f, docs.text(f)) if f in pages else None
         find, new = e["find"], e["replace"]
-        count = text.count(find)
-        if count == 0:
-            problems.append(f"{where}: фрагмента find нет на странице дословно: «{_norm(find)[:70]}»")
+        if f not in pages:
+            probs.append("страница не входит в страницы задания")
+        elif text is None:
+            probs.append("страницы нет")
+        else:
+            count = text.count(find)
+            if count == 0:
+                probs.append(f"фрагмента find нет на странице дословно: «{_norm(find)[:70]}»")
+            elif count > 1:
+                probs.append(f"фрагмент find встречается на странице {count} раза: возьми более длинный фрагмент")
+            elif find == new:
+                probs.append("новый текст совпадает со старым")
+            if len(find) > MAX_FIND_CHARS or len(new.splitlines()) > MAX_EDIT_LINES:
+                probs.append(f"правка слишком большая (не больше {MAX_EDIT_LINES} строк нового текста): раздели на несколько")
+            if "SCREENSHOT-TODO" in new:
+                probs.append("метки скриншотов не ставятся: скриншоты к проверке определяет код")
+            if "<!--" in new and "<!--" not in find:
+                probs.append("в новом тексте комментарий: вопросы и пояснения пишутся в ответе, а не в документации")
+            m = re.search(r"MD_(\w+)/", f)
+            vocab = _ui_vocabulary(ds).get(m.group(1) if m else "", set())
+            page_norm = _norm(text)
+            for line in new.splitlines():
+                for t in QUOTED_RE.findall(line):
+                    term = _norm(next(x for x in t if x))
+                    if term not in vocab and term not in page_norm and term not in known:
+                        probs.append(f"названия «{term}» нет ни в текстах интерфейса новой версии, ни на странице, ни в записях задачи")
+        probs += evidence_problems(e.get("evidence"))
+        if probs:
+            bad.append(entry)
             continue
-        if count > 1:
-            problems.append(f"{where}: фрагмент find встречается на странице {count} раза: возьми более длинный фрагмент")
-            continue
-        if find == new:
-            problems.append(f"{where}: новый текст совпадает со старым")
-            continue
-        if len(find) > MAX_FIND_CHARS or len(new.splitlines()) > MAX_EDIT_LINES:
-            problems.append(f"{where}: правка слишком большая (не больше {MAX_EDIT_LINES} строк нового текста): раздели на несколько")
-            continue
-        if "SCREENSHOT-TODO" in new:
-            problems.append(f"{where}: метки скриншотов не ставятся: скриншоты к проверке определяет код")
-        if "<!--" in new and "<!--" not in find:
-            problems.append(f"{where}: в новом тексте комментарий: вопросы и пояснения пишутся в ответе, а не в документации")
-        m = re.search(r"MD_(\w+)/", f)
-        vocab = _ui_vocabulary(ds).get(m.group(1) if m else "", set())
-        page_norm = _norm(text)
-        for line in new.splitlines():
-            for t in QUOTED_RE.findall(line):
-                term = _norm(next(x for x in t if x))
-                if term not in vocab and term not in page_norm and term not in known:
-                    problems.append(f"{where}: названия «{term}» нет ни в текстах интерфейса новой версии, ни на странице, "
-                                    "ни в записях задачи")
-        check_list(e.get("evidence"), where)
         staged[f] = text.replace(find, new, 1)
         ops.append({"file": f, "find": find, "replace": new, "what": e["what"]})
-    return {"problems": problems, "ops": ops, "staged": staged, "approx": approx}
+    problems = [f"решение: {p}" for p in decision_problems] + \
+               [f"правка {b['n']} ({b['file']}, «{b['what']}»): {p}" for b in bad for p in b["problems"]]
+    return {"problems": problems, "ops": ops, "bad": bad, "staged": staged, "approx": approx, "notes": notes,
+            "decision_problems": decision_problems}
 
 
 def apply_ops(ds, docs: Docs, uid: str, verified: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -278,35 +280,43 @@ def apply_ops(ds, docs: Docs, uid: str, verified: Dict[str, Any]) -> List[Dict[s
 
 
 def verify_rn(answer: Dict[str, Any], expected: List[str]) -> Dict[str, Any]:
-    """Release notes: у каждой принятой задачи одна строка RU и EN. Без строки - только с причиной в no_line.
-    Строки задач, которых нет среди ожидаемых, игнорируются."""
-    problems: List[str] = []
+    """Release notes: строки проверяются по задачам. Хорошая строка принимается, плохая или отсутствующая - нет.
+
+    У каждой ожидаемой задачи должна быть одна строка RU и EN либо причина в no_line. Строки задач, которых нет среди
+    ожидаемых, игнорируются. Возвращает lines (принятые), skipped (задачи без строки с причиной), problems (по задачам).
+    """
+    problems: Dict[str, List[str]] = {}
     lines: Dict[str, Dict[str, str]] = {}
     for n, x in enumerate(answer.get("lines") or [], 1):
         if not isinstance(x, dict) or not x.get("task"):
-            problems.append(f"строка {n}: нужны поля task, ru, en")
+            problems.setdefault(f"строка {n}", []).append("нужны поля task, ru, en")
             continue
         uid = str(x["task"])
         if uid in lines:
-            problems.append(f"{uid}: строка дана дважды, нужна одна")
-        lines[uid] = row = {"ru": str(x.get("ru") or "").strip(), "en": str(x.get("en") or "").strip(),
-                            "section": str(x.get("section") or "").strip()}
+            continue                                  # лишние строки одной задачи игнорируются: берется первая
+        row = {"ru": str(x.get("ru") or "").strip(), "en": str(x.get("en") or "").strip(), "section": str(x.get("section") or "").strip()}
+        bad = []
         for lang in ("ru", "en"):
             t = row[lang]
             if not t or "\n" in t:
-                problems.append(f"{uid}: формулировка {lang} пустая или в несколько строк")
+                bad.append(f"формулировка {lang} пустая или в несколько строк")
             if "`" in t or "<!--" in t or re.search(r"\b[A-Z][a-z0-9]+(?:[A-Z][a-z0-9]+)+\b", t):
-                problems.append(f"{uid}: в формулировке {lang} осталось имя из кода или служебная пометка")
+                bad.append(f"в формулировке {lang} осталось имя из кода или служебная пометка")
         if not re.search(r"[А-Яа-я]", row["ru"]) or re.search(r"[А-Яа-я]", row["en"]):
-            problems.append(f"{uid}: формулировки перепутаны по языкам или не переведены")
+            bad.append("формулировки перепутаны по языкам или не переведены")
+        if bad:
+            problems[uid] = bad
+        else:
+            lines[uid] = row
     skipped: Dict[str, str] = {}
     for n, x in enumerate(answer.get("no_line") or [], 1):
         if not isinstance(x, dict) or not x.get("task") or not str(x.get("reason") or "").strip():
-            problems.append(f"no_line {n}: нужны поля task и reason")
+            problems.setdefault(f"no_line {n}", []).append("нужны поля task и reason")
         else:
             skipped[str(x["task"])] = str(x["reason"]).strip()
-    missing = [u for u in expected if u not in lines and u not in skipped]
-    if missing:
-        problems.append("нет строк для принятых задач: " + ", ".join(missing))
-    return {"problems": problems, "lines": {u: r for u, r in lines.items() if u in expected},
+    for uid in expected:
+        if uid not in lines and uid not in skipped and uid not in problems:
+            problems[uid] = ["строки нет: дай строку или причину в no_line"]
+    return {"problems": {u: p for u, p in problems.items() if u in expected or u.startswith(("строка", "no_line"))},
+            "lines": {u: r for u, r in lines.items() if u in expected},
             "skipped": {u: w for u, w in skipped.items() if u in expected}}

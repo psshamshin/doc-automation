@@ -75,7 +75,7 @@ class WorkspaceTest(AgentCase):
         self.assertNotIn("GUI-106", task)
         self.assertIn("{{", (self.ws / "AGENTS.md").read_text(encoding="utf-8").replace("{{PRODUCT_NAME}}", "") and "{{")
         digest = (self.ws / "sources/GUI-105/changes.md").read_text(encoding="utf-8")
-        self.assertIn("OrdersFilter.tsx [source, modified, используется приложением POINT 2]", digest)
+        self.assertIn("OrdersFilter.tsx [source, modified, используется приложением POINT 2", digest)
         self.assertNotIn("orders.spec.js", digest)                       # тесты в сводку не идут
         self.assertFalse((self.ws / "sources/GUI-105/code").exists())    # полные файлы кода не копируются
 
@@ -140,8 +140,7 @@ class FullRunTest(AgentCase):
 class RejectionTest(AgentCase):
     """Ответ, не прошедший проверку, не вносится. Одна повторная попытка, затем отказ."""
 
-    BAD = (("no_evidence", "нет подтверждения"), ("fake_quote", "цитаты нет в источнике changelog"), ("no_steps", "нет списка steps"),
-           ("foreign_step", "открыт файл вне источников задачи"), ("fake_term", "названия «Несуществующая кнопка» нет"),
+    BAD = (("no_evidence", "нет подтверждения"), ("fake_quote", "цитаты нет в источнике changelog"), ("fake_term", "названия «Несуществующая кнопка» нет"),
            ("big_edit", "правка слишком большая"), ("bad_find", "фрагмента find нет на странице"),
            ("wrong_page", "страница не входит в страницы задания"), ("comment", "в новом тексте комментарий"),
            ("shot", "метки скриншотов не ставятся"), ("bad_json", "не является JSON"), ("fail", "кодом 3"))
@@ -158,6 +157,30 @@ class RejectionTest(AgentCase):
                 self.assertNotIn("Правка заглушки", self.result())            # ничего не внесено
                 self.assertNotIn("GUI-105", (self.out / P.OUT_RESULT / "trace.md").read_text(encoding="utf-8"))
         self.assertIn("не внесено: отклонено дважды", self.summary())
+
+    def test_steps_are_only_notes(self):
+        mark_review(self.out, **{"NOTASK:0.10.0#7": 1})
+        for mode, note in (("no_steps", "нет списка steps"), ("foreign_step", "вне источников задачи")):
+            with self.subTest(mode):
+                self.cli("agent", "--cmd", f"{STUB} {mode}", "--redo")
+                q = self.items()["GUI-105__write_doc"]
+                self.assertEqual((q["status"], len(q["applied"])), ("done", 1))
+                self.assertTrue(any(note in n for n in q["notes"]), q["notes"])
+
+    def test_one_bad_edit_does_not_cancel_the_good_one(self):
+        self.start(**{"NOTASK:0.10.0#7": 1})
+        good = self.edit()
+        bad = self.edit()["edits"][0]
+        bad["find"], bad["what"] = "такой строки на странице нет", "плохая правка"
+        good["edits"].append(bad)
+        self.answer("GUI-105__write_doc", **good)
+        self.cli("agent")
+        q = self.items()["GUI-105__write_doc"]
+        self.assertEqual((q["status"], len(q["applied"])), ("partial", 1))
+        self.assertTrue(any("правка 2" in p for p in q["problems"]), q["problems"])
+        self.assertIn("и по дате.", self.result())
+        task = (self.ws / "tasks/GUI-105__write_doc__retry.md").read_text(encoding="utf-8")
+        self.assertIn("правка 2", task)
 
     def test_second_attempt_can_succeed(self):
         self.start("--cmd", f"{STUB} bad_then_ok", **{"NOTASK:0.10.0#7": 1})
@@ -236,7 +259,7 @@ class ReleaseNotesTest(AgentCase):
         self.assertFalse(self.rn.exists())
 
     def test_line_is_required_unless_a_reason_is_given(self):
-        for mode, status, text in (("rn_missing", "dropped", "нет строк для принятых задач"), ("rn_code", "dropped", "имя из кода"),
+        for mode, status, text in (("rn_missing", "partial", "строки нет"), ("rn_code", "partial", "имя из кода"),
                                    ("rn_no_line", "done", "без строки по решению агента")):
             with self.subTest(mode):
                 self.cli("agent", "--cmd", f"{STUB} {mode}", "--redo") if self.ws.exists() else self.start("--cmd", f"{STUB} {mode}", **{"NOTASK:0.10.0#7": 1})
