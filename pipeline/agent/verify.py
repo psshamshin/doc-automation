@@ -9,13 +9,14 @@ from __future__ import annotations
 
 import difflib
 import json
+import posixpath
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .. import docs as DOCS
 from ..common import load_json, read_text, save_text
-from .tasks import _stale_context, _unit_context, unit_pages, unit_sources
+from .tasks import _checks_context, _stale_context, _unit_context, unit_pages, unit_sources
 
 STATUSES = ("done", "unknown")      # unknown: в источниках нет фактов, вывода нет, ничего не вносится
 DECISIONS = ("doc", "rn", "langs", "screens", "skip")
@@ -23,6 +24,8 @@ VIRTUAL_SOURCES = ("changelog", "i18n", "jira")
 MAX_EDIT_LINES = 30
 MAX_FIND_CHARS = 2000
 APPROX_RATIO = 0.96
+VAR_RE = re.compile(r"\{\{\s*(\w+)\s*\}\}")
+MD_LINK_RE = re.compile(r"\]\(([^)\s#]+\.md)(?:#[^)\s]*)?\)")
 QUOTED_RE = re.compile(r"«([^»\n]{2,80})»|\"([^\"\n]{2,80})\"|“([^”\n]{2,80})”")
 
 
@@ -111,6 +114,18 @@ class Docs:
         self.cache[f] = text
         self.dirty.add(f)
 
+    def variables(self) -> set:
+        """Переменные документации, которые уже используются где-то на страницах (по обоим языкам)."""
+        if not hasattr(self, "_vars"):
+            self._vars = {m for p in self.ds.result_dir.rglob("*.md") for m in VAR_RE.findall(read_text(p) or "")}
+        return self._vars
+
+    def page_exists(self, page: str, target: str) -> bool:
+        """Страница по относительной ссылке из страницы page (путь вида docs/MD_rus/docs/...)."""
+        root = "/".join(page.split("/")[:3]) + "/"
+        rel = posixpath.normpath(posixpath.join(posixpath.dirname(page[len(root):]), target))
+        return not rel.startswith("..") and self.path(root + rel).is_file()
+
     def save(self) -> None:
         for f in sorted(self.dirty):
             save_text(self.path(f), self.cache[f] or "")
@@ -156,7 +171,7 @@ def verify_answer(ds, u: Dict[str, Any], kind: str, answer: Dict[str, Any], docs
     """
     approx: List[str] = []
     sources, pages = unit_sources(ds, u), unit_pages(ds, u)
-    printed = _stale_context(ds, u) if u.get("_stale") else _unit_context(ds, u, conf)       # как напечатано в задании
+    printed = _stale_context(ds, u) if u.get("_stale") else _checks_context(ds, u) if u.get("_checks") else _unit_context(ds, u, conf)       # как напечатано в задании
     known = _norm(" \n ".join(_virtual_text(u, k) for k in VIRTUAL_SOURCES))
 
     def found(quote: str, text: str, code: bool = False) -> bool:
@@ -244,6 +259,12 @@ def verify_answer(ds, u: Dict[str, Any], kind: str, answer: Dict[str, Any], docs
                 probs.append("метки скриншотов не ставятся: скриншоты к проверке определяет код")
             if "<!--" in new and "<!--" not in find:
                 probs.append("в новом тексте комментарий: вопросы и пояснения пишутся в ответе, а не в документации")
+            for var in sorted(set(VAR_RE.findall(new)) - set(VAR_RE.findall(find))):
+                if var not in docs.variables():
+                    probs.append(f"переменной {{{{ {var} }}}} нет ни на одной странице документации")
+            for target in sorted(set(MD_LINK_RE.findall(new)) - set(MD_LINK_RE.findall(find))):
+                if not target.startswith(("http://", "https://")) and not docs.page_exists(f, target):
+                    probs.append(f"ссылка на несуществующую страницу: {target}")
             m = re.search(r"MD_(\w+)/", f)
             vocab = _ui_vocabulary(ds).get(m.group(1) if m else "", set())
             page_norm = _norm(text)
