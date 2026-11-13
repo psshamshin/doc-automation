@@ -58,17 +58,20 @@ def files_for_entry(entry: Dict[str, Any], changed: List[Dict[str, Any]], rules:
                 hits[p].append(f"тег → {pref}")
                 break
 
-    # запасной вариант: тег короче реального пути ([monokit][page-header] → monokit/widgets/page-header)
+    # запасной вариант: тег короче реального пути ([monokit][page-header] -> monokit/widgets/page-header).
+    # Тег из нескольких сегментов (sources/filters) ищется в пути целиком и подряд; по последнему сегменту ищется только
+    # тег из одного сегмента: иначе 'filters' притянет все каталоги filters пакета (в прогоне - 76 чужих файлов).
     if not hits and tags and tags[0] in pkg_dirs:
         base = f"packages/{tags[0]}/"
         for s in [t for t in tags[1:] if t not in rules["attribution"]["ignore_tags"]]:
-            last = s.rstrip("/").split("/")[-1]
-            if len(last) < 4:
+            parts = s.rstrip("/").split("/")
+            if len(parts[-1]) < 4:
                 continue
             for f in changed:
                 p = f["path"]
-                if p.startswith(base) and (f"/{s}/" in p or f"/{last}/" in p or f"/{last}." in p):
-                    hits[p].append(f"сегмент пути → {last}")
+                if p.startswith(base) and (f"/{s}/" in p or f"/{s}." in p
+                                           or (len(parts) == 1 and (f"/{parts[0]}/" in p or f"/{parts[0]}." in p))):
+                    hits[p].append(f"путь по тегу → {s}")
 
     # имена компонентов/хуков: в обратных кавычках, CamelCase в тексте, kebab-тег → CamelCase
     refs = list(entry.get("code_refs", []))
@@ -295,23 +298,29 @@ def doc_candidates(files, rel_entries, doc_map, only: Optional[List[str]] = None
                     out_only.setdefault(d, []).append(f"область: {m['name']}")
         return [{"doc": d, "why": w} for d, w in out_only.items()]
     hay = [f["path"] for f in files] + ["/".join(e["tags"]) for e in rel_entries]
-    hay_text = " ".join(e["text"] for e in rel_entries).lower()
-
-    def collect(by_code: bool) -> "OrderedDict[str, List[str]]":
-        out: "OrderedDict[str, List[str]]" = OrderedDict()
+    out: "OrderedDict[str, List[str]]" = OrderedDict()
+    for m in doc_map["map"]:
+        hit = next((f"код: {fr}" for fr in m.get("code", []) if any(fr in h for h in hay)), None)
+        if hit:
+            for d in m["docs"]:
+                out.setdefault(d, []).append(hit)
+    if out:
+        return [{"doc": d, "why": sorted(set(w))} for d, w in out.items()]
+    # по коду пусто: страницы по словам в записях. Страница тем вероятнее, чем в большем числе записей встретились ее
+    # слова; остаются страницы, набравшие не меньше половины максимума (одно случайное слово в длинной записи не в счет)
+    score: Dict[str, set] = {}
+    why: Dict[str, set] = {}
+    for e in rel_entries:
+        text = e["text"].lower()
         for m in doc_map["map"]:
-            hit = None
-            if by_code:
-                hit = next((f"код: {fr}" for fr in m.get("code", []) if any(fr in h for h in hay)), None)
-            else:
-                hit = next((f"слово: {w}" for w in m.get("words", []) if w.lower() in hay_text), None)
-            if hit:
+            w = next((w for w in m.get("words", []) if w.lower() in text), None)
+            if w:
                 for d in m["docs"]:
-                    out.setdefault(d, []).append(hit)
-        return out
-
-    out = collect(True) or collect(False)
-    return [{"doc": d, "why": sorted(set(w))} for d, w in out.items()]
+                    score.setdefault(d, set()).add(e["id"])
+                    why.setdefault(d, set()).add(f"слово: {w}")
+    top = max((len(v) for v in score.values()), default=0)
+    ranked = sorted(score, key=lambda d: (-len(score[d]), d))
+    return [{"doc": d, "why": sorted(why[d])} for d in ranked if len(score[d]) * 2 >= top]
 
 
 def action_of(product, visibility, klass) -> Dict[str, str]:

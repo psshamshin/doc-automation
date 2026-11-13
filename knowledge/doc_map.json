@@ -13,7 +13,7 @@
     {"name": "cards", "code": ["point-cards", "card-page", "person-card", "create-card", "/cards"], "words": ["картотек", "карточк"], "docs": ["user-manual/110_Card_index.md"]},
     {"name": "lists", "code": ["list-details", "list-list-page", "attach-cards-to-list", "/lists"], "words": ["списк"], "docs": ["user-manual/130_Lists.md"]},
     {"name": "handlers", "code": ["handlers"], "words": ["сценари", "обработчик"], "docs": ["user-manual/140_Handlers.md"]},
-    {"name": "sources", "code": ["pages/sources", "source-stream-settings", "pages/queue", "editStream", "pages/stream"], "words": ["источник"], "docs": ["user-manual/150_Event_sources.md"]},
+    {"name": "sources", "code": ["pages/sources", "entities/sources", "source-group", "source-stream-settings", "create-stream", "duplicate-stream", "transfer-streams", "stream-logs", "pages/queue", "editStream", "pages/stream"], "words": ["источник"], "docs": ["user-manual/150_Event_sources.md"]},
     {"name": "vms", "code": ["/vms"], "words": ["vms"], "docs": ["user-manual/155_VMS.md"]},
     {"name": "video_analytics", "code": ["video-analytics", "va-reporter", "api-bindings/streams", "api-bindings/src/streams"], "words": ["видеоаналитик"], "docs": ["user-manual/160_Videoanalysts.md", "user-manual/115_Analytics_archive.md"]},
     {"name": "users", "code": ["pages/accounts", "pages/departments"], "words": ["пользовател", "подразделен"], "docs": ["user-manual/165_Users.md"]},

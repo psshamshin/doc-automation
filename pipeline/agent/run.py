@@ -26,7 +26,7 @@ from .tasks import (PROMPTS, STALE_ID, agent_cmd, build_queue, render_task, stal
 from .verify import Docs, apply_ops, check_answer, verify_answer, verify_rn
 
 NAMES = {"done": "принято", "unknown": "агент не нашел фактов", "rejected": "отклонено, нужна повторная попытка",
-         "dropped": "не внесено: отклонено дважды", "prepared": "ждет агента", "waiting": "ждет решений по задачам"}
+         "partial": "принято частично, часть правок отклонена", "dropped": "не внесено: отклонено дважды", "prepared": "ждет агента", "waiting": "ждет решений по задачам"}
 
 
 def _digest(p: Path) -> str:
@@ -119,7 +119,7 @@ def run(ds, units: List[Dict[str, Any]], conf: Dict[str, Any], decisions: Dict[s
         path = answer_of(rec)
         old = prev.get(rec["id"], {})
         if rec["kind"] != "release_notes" and path.is_file() and old.get("answer_sha") == _digest(path) \
-                and old.get("status") in ("done", "unknown", "dropped") and not redo:
+                and old.get("status") in ("done", "unknown", "dropped", "partial") and not redo:
             rec.update({k: old[k] for k in ("status", "note", "problems", "applied", "decision", "steps", "questions",
                                             "summary", "approx", "seconds") if k in old})
             rec["answer_sha"] = old["answer_sha"]
@@ -143,24 +143,28 @@ def run(ds, units: List[Dict[str, Any]], conf: Dict[str, Any], decisions: Dict[s
             rec.update(status="unknown", note=rec["summary"])
             return
         v = verify_answer(ds, by_id[rec["unit"]], rec["kind"], a, docs, conf, rec["id"])
+        ops = apply_ops(ds, docs, rec["unit"], v) if v["ops"] else []
+        rec.update(applied=[{"file": o["file"], "what": o["what"]} for o in ops], approx=v["approx"], notes=v["notes"][:10])
+        if rec["kind"] == "decide" and not v["decision_problems"] and a["status"] == "done":
+            rec["decision"] = a.get("decision")
         if v["problems"]:
-            rec.update(status="rejected", problems=v["problems"],
+            rec.update(status="partial" if ops else "rejected", problems=v["problems"],
                        note="; ".join(v["problems"][:2]) + (f"; и еще: {len(v['problems']) - 2}" if len(v["problems"]) > 2 else ""))
-            return
-        ops = apply_ops(ds, docs, rec["unit"], v)
-        rec.update(status=a["status"], note=rec["summary"], applied=[{"file": o["file"], "what": o["what"]} for o in ops],
-                   approx=v["approx"], decision=a.get("decision") if rec["kind"] == "decide" else None)
+        else:
+            rec.update(status=a["status"], note=rec["summary"])
 
     def attempt(base: Dict[str, Any], rn: bool = False) -> List[Dict[str, Any]]:
         """Первая попытка и, если ответ отклонен, одна повторная. Возвращает записи заданий."""
         r1 = new_rec(base)
         (evaluate_rn if rn else evaluate)(r1)
         out = [r1]
-        if r1["status"] == "rejected":
+        if r1["status"] in ("rejected", "partial"):
             r2 = new_rec({**base, "id": base["id"] + "__retry"}, retry_of=base["id"], problems_before=r1["problems"])
             (evaluate_rn if rn else evaluate)(r2)
             if r2["status"] == "rejected":
                 r2["status"] = "dropped"
+            if r2["status"] == "partial" and r1["status"] == "partial":
+                pass
             out.append(r2)
         return out
 
@@ -183,7 +187,11 @@ def run(ds, units: List[Dict[str, Any]], conf: Dict[str, Any], decisions: Dict[s
                 final[base["unit"]] = last["decision"]
 
     # --- release notes: после решений по всем спорным задачам
+    rn_lines: Dict[str, Dict[str, str]] = {}
+    rn_skipped: Dict[str, str] = {}
+
     def evaluate_rn(rec) -> None:
+        """Строки принимаются по задачам; принятые копятся между попытками, release notes собираются из них."""
         if pending_decide:
             rec["status"] = "waiting"
             return
@@ -191,29 +199,28 @@ def run(ds, units: List[Dict[str, Any]], conf: Dict[str, Any], decisions: Dict[s
         a = rec.pop("_answer", None)
         if rec["status"] == "rejected" or a is None:
             return
-        expected = [u["id"] for u in units if final.get(u["id"]) in ("doc", "rn", "langs")]
+        expected = [u["id"] for u in units if final.get(u["id"]) in ("doc", "rn", "langs")
+                    and u["id"] not in rn_lines and u["id"] not in rn_skipped]
         v = verify_rn(a, expected)
-        if v["problems"]:
-            rec.update(status="rejected", problems=v["problems"], note="; ".join(v["problems"][:2]))
-            return
-        DRAFT.write_release_notes(ds, units, final, index, v["lines"])
+        rn_lines.update(v["lines"])
+        rn_skipped.update(v["skipped"])
+        DRAFT.write_release_notes(ds, units, final, index, rn_lines)
         what = "файлы RU и EN собраны кодом"
-        if v["skipped"]:
-            what += "; без строки по решению агента: " + "; ".join(f"{u} ({why[:80]})" for u, why in v["skipped"].items())
-        rec.update(status="done", note=rec["summary"], applied=[{"file": f"release notes: строк {len(v['lines'])}", "what": what}])
+        if rn_skipped:
+            what += "; без строки по решению агента: " + "; ".join(f"{u} ({why[:80]})" for u, why in rn_skipped.items())
+        rec.update(summary=rec["summary"], applied=[{"file": f"release notes: строк {len(rn_lines)}", "what": what}])
+        if v["problems"]:
+            probs = [f"{u}: {x}" for u, ps in v["problems"].items() for x in ps]
+            rec.update(status="partial", problems=probs, note="; ".join(probs[:2]))
+        else:
+            rec.update(status="done", note=rec["summary"])
 
     for base in [b for b in queue if b["kind"] == "release_notes"]:
         recs += attempt(base, rn=True)
 
-    # --- время: при ручном запуске оценивается по времени записи файлов ответов
-    t_prev = prev_q.get("built_at")
-    for r in sorted((r for r in recs if answer_of(r).is_file() and "seconds" not in r), key=lambda r: answer_of(r).stat().st_mtime):
-        t = answer_of(r).stat().st_mtime
+    for r in recs:
         if r["id"] in seconds:
             r["seconds"] = seconds[r["id"]]
-        elif t_prev and t > t_prev:
-            r["seconds"] = int(t - t_prev)
-        t_prev = t if t > (t_prev or 0) else t_prev
     for r in recs:
         r.setdefault("seconds", None)
 
