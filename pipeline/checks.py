@@ -272,6 +272,27 @@ def _key(x: Dict[str, Any]) -> tuple:
     return (x["lang"], x["file"], x["target"], x["why"])
 
 
+FIXABLE = ("links", "brands", "images_missing", "parity")
+MAX_FIXES = 40
+
+
+def findings_to_fix(res: Dict[str, Any], touched: Set[str]) -> List[Dict[str, Any]]:
+    """Находки, которые исправляются правкой текста: появились в этом релизе или лежат на страницах, которые правил пайплайн.
+
+    Остальное было в документации и до релиза: массовую правку чужих страниц пайплайн не начинает. Отсутствие страницы
+    в одном из языков и картинки без ссылок правкой текста не исправляются. Не более MAX_FIXES, сначала новые.
+    """
+    out = []
+    for k in FIXABLE:
+        for x in res.get(k, {}).get("items", []):
+            if x["target"] == "страница":
+                continue
+            if x["new"] or x["file"] in touched:
+                out.append(dict(x, check=k))
+    out.sort(key=lambda x: (not x["new"], x["check"], x["file"], x["line"]))
+    return out[:MAX_FIXES]
+
+
 def run_checks(ds) -> Dict[str, Any]:
     """Проверяет результат и документацию прошлого релиза. У каждой находки пометка new: появилась в этом релизе."""
     base_repo = ds.slot(P.SLOT_DOCS_OLD)

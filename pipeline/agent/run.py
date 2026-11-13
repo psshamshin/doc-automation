@@ -11,17 +11,19 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shutil
 import subprocess
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from .. import checks as CHK
 from .. import draft as DRAFT
 from .. import product as P
 from .. import validation as V
 from ..common import ROOT, load_json, log, read_text, save_json, save_text
-from .tasks import (PROMPTS, STALE_ID, agent_cmd, build_queue, render_task, stale_unit, unit_dir, unit_sources,
+from .tasks import (CHECKS_ID, PROMPTS, checks_unit, STALE_ID, agent_cmd, build_queue, render_task, stale_unit, unit_dir, unit_pages, unit_sources,
                     workspace, index_of)
 from .verify import Docs, apply_ops, check_answer, verify_answer, verify_rn
 
@@ -33,22 +35,36 @@ def _digest(p: Path) -> str:
     return hashlib.sha256(p.read_bytes()).hexdigest()
 
 
+def sync_docs(ds) -> None:
+    """Копия документации в папке агента всегда равна принятому результату: агент видит правки прошлых заданий."""
+    dst = workspace(ds) / "docs"
+    if dst.exists():
+        shutil.rmtree(dst)
+    shutil.copytree(ds.result_dir, dst, ignore=shutil.ignore_patterns(".DS_Store"))
+
+
+def write_task(ds, rec: Dict[str, Any], prompts: Dict[str, str], units_by_id: Dict[str, Any]) -> None:
+    """Файл задания и его источники в папке агента."""
+    w = workspace(ds)
+    save_text(w / "tasks" / f"{rec['id']}.md", prompts[rec["id"]])
+    if rec["unit"] and rec["unit"] in units_by_id:
+        for dst, src in unit_sources(ds, units_by_id[rec["unit"]]).items():
+            (w / dst).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src, w / dst)
+
+
 def refresh_workspace(ds, recs: List[Dict[str, Any]], prompts: Dict[str, str], units_by_id: Dict[str, Any]) -> None:
     """Собирает папку агента заново: документация, задания, источники. Ответы и progress.md сохраняются."""
     w = workspace(ds)
     for sub in ("docs", "tasks", "sources"):
         if (w / sub).exists():
             shutil.rmtree(w / sub)
-    shutil.copytree(ds.result_dir, w / "docs", ignore=shutil.ignore_patterns(".DS_Store"))
+    sync_docs(ds)
     (w / "answers").mkdir(parents=True, exist_ok=True)
     if not (w / "progress.md").exists():
         save_text(w / "progress.md", "# Ход работы агента\n\nАгент дописывает сюда строку в начале и в конце каждого задания и на каждом шаге.\n\n")
     for r in recs:
-        save_text(w / "tasks" / f"{r['id']}.md", prompts[r["id"]])
-        if r["unit"] and r["unit"] in units_by_id:
-            for dst, src in unit_sources(ds, units_by_id[r["unit"]]).items():
-                (w / dst).parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(src, w / dst)
+        write_task(ds, r, prompts, units_by_id)
     todo = "\n".join(f"{n}. `tasks/{r['id']}.md`" for n, r in enumerate([r for r in recs if r["status"] == "prepared"], 1)) \
         or "Заданий, ждущих ответа, нет."
     save_text(w / "AGENTS.md", (read_text(PROMPTS / "workspace_agents.md") or "")
@@ -103,6 +119,8 @@ def run(ds, units: List[Dict[str, Any]], conf: Dict[str, Any], decisions: Dict[s
             path.unlink()
         if launch and not path.exists():
             log(f"агент: {rec['id']}")
+            sync_docs(ds)
+            write_task(ds, rec, prompts, by_id)
             t0 = time.time()
             err = run_cmd(ds, rec, prompts[rec["id"]], command, timeout)
             seconds[rec["id"]] = int(time.time() - t0)
@@ -123,6 +141,9 @@ def run(ds, units: List[Dict[str, Any]], conf: Dict[str, Any], decisions: Dict[s
             rec.update({k: old[k] for k in ("status", "note", "problems", "applied", "decision", "steps", "questions",
                                             "summary", "approx", "seconds") if k in old})
             rec["answer_sha"] = old["answer_sha"]
+            return
+        if rec["kind"] == "write_doc" and not unit_pages(ds, by_id[rec["unit"]]):
+            rec.update(status="unknown", note="для задачи не найдена страница документации (карта knowledge/doc_map.json): править нечего")
             return
         obtain(rec)
         chk = check_answer(path, rec)
@@ -185,6 +206,25 @@ def run(ds, units: List[Dict[str, Any]], conf: Dict[str, Any], decisions: Dict[s
                 pending_decide = True
             elif last["status"] == "done" and last.get("decision"):
                 final[base["unit"]] = last["decision"]
+
+    # --- решение агента «править документацию»: задание на правку создается сразу, а не при следующем запуске
+    for u in units:
+        decided_here = [r for r in recs if r["unit"] == u["id"] and r["kind"] == "decide"]
+        if decisions.get(u["id"]) == "agent" and final.get(u["id"]) in ("doc", "langs") \
+                and not any(r["applied"] for r in decided_here):          # правки могли прийти уже в ответе decide
+            base = {"id": f"{unit_dir(u['id'])}__write_doc", "unit": u["id"], "kind": "write_doc"}
+            recs += attempt(base)
+
+    # --- проверки документации после всех правок: исправляется то, что появилось в этом релизе или лежит на правленных страницах
+    touched = {re.sub(r"^docs/MD_\w+/docs/", "", a["file"]) for r in recs for a in r["applied"] if a["file"].startswith("docs/")}
+    if not pending_decide and any(r["kind"] in ("write_doc", "stale") for r in recs):
+        fixes = CHK.findings_to_fix(CHK.run_checks(ds), touched)
+        cu = checks_unit(fixes)
+        if cu:
+            by_id[CHECKS_ID] = cu
+            recs += attempt({"id": "checks_fix", "unit": CHECKS_ID, "kind": "checks"})
+        else:                                     # находок нет (в том числе после исправления): прежние записи сохраняются в журнале
+            recs += [prev[i] for i in ("checks_fix", "checks_fix__retry") if i in prev]
 
     # --- release notes: после решений по всем спорным задачам
     rn_lines: Dict[str, Dict[str, str]] = {}

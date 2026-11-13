@@ -106,7 +106,7 @@ class FullRunTest(AgentCase):
         self.assertIn('- **[General]**: Change for task GUI-105.',
                       (self.out / P.OUT_RESULT / "MD_eng/docs/release-notes/020.md").read_text(encoding="utf-8"))
         self.assertIn("- 020.md\n        - 010.md", (self.out / P.OUT_RESULT / "MD_rus/docs/release-notes/.pages").read_text(encoding="utf-8"))
-        self.assertIn("Состояние: принято - 6.", self.summary())
+        self.assertIn("Состояние: принято - 7.", self.summary())
         self.assertIn("- GUI-103: строка в release notes", self.summary())
         self.assertIn("ГОТОВО GUI-105__write_doc", (self.out / P.OUT_AGENT / "progress.md").read_text(encoding="utf-8"))
         self.assertTrue(all(isinstance(i["seconds"], int) for i in q.values()))
@@ -182,6 +182,18 @@ class RejectionTest(AgentCase):
         task = (self.ws / "tasks/GUI-105__write_doc__retry.md").read_text(encoding="utf-8")
         self.assertIn("правка 2", task)
 
+    def test_new_variable_and_missing_link_are_rejected(self):
+        self.start(**{"NOTASK:0.10.0#7": 1})
+        for text, message in (("Продукт {{ NO_SUCH_VARIABLE }}.", "переменной"), ("См. [работу](./no_such_page.md).", "несуществующую страницу")):
+            with self.subTest(message):
+                self.answer("GUI-105__write_doc", **self.edit(replace=FIND + "\n\n" + text))
+                self.cli("agent")
+                q = self.items()["GUI-105__write_doc"]
+                self.assertTrue(any(message in p for p in q["problems"]), q["problems"])
+        self.answer("GUI-105__write_doc", **self.edit(replace=FIND + "\n\nСм. [работу](./050_Work.md)."))
+        self.cli("agent")
+        self.assertEqual(self.items()["GUI-105__write_doc"]["status"], "done")
+
     def test_second_attempt_can_succeed(self):
         self.start("--cmd", f"{STUB} bad_then_ok", **{"NOTASK:0.10.0#7": 1})
         q = self.items()
@@ -223,6 +235,47 @@ class RejectionTest(AgentCase):
         q = self.items()["GUI-105__write_doc"]
         self.assertEqual((q["status"], len(q["applied"])), ("unknown", 1))
         self.assertIn("и по дате.", self.result())
+
+
+class ChainTest(AgentCase):
+    """Решение агента «править документацию» и находки проверок приводят к заданиям, а не теряются."""
+
+    def test_decision_doc_creates_write_doc_task(self):
+        self.start(**{"GUI-105": 2, "NOTASK:0.10.0#7": 1})
+        item = "GUI-105"
+        self.assertNotIn(f"{item}__write_doc", self.items())
+        task = (self.ws / f"tasks/{item}__decide.md").read_text(encoding="utf-8")
+        quote = re.search(r"^- \[[^\]]+\] \[[^\]]*\] \[.*?\] (.+)$", task, flags=re.M).group(1)[:60]
+        self.answer(f"{item}__decide", decision="doc", evidence=[{"source": "changelog", "quote": quote}])
+        self.cli("agent")
+        q = self.items()
+        self.assertEqual(q[f"{item}__decide"]["decision"], "doc")
+        self.assertEqual(q[f"{item}__write_doc"]["status"], "prepared")
+        self.assertTrue((self.ws / f"tasks/{item}__write_doc.md").is_file())
+
+    def test_task_without_pages_is_not_given_to_the_agent(self):
+        for lang in ("rus", "eng"):
+            (self.out / P.OUT_RESULT / f"MD_{lang}/docs/user-manual/100_Orders.md").unlink()
+        self.start("--cmd", STUB, **{"NOTASK:0.10.0#7": 1})
+        q = self.items()["GUI-105__write_doc"]
+        self.assertEqual(q["status"], "unknown")
+        self.assertIn("не найдена страница", q["note"])
+
+    def test_checks_after_edits_become_a_task_and_a_fix_is_applied(self):
+        self.start("--cmd", STUB, **{"NOTASK:0.10.0#7": 1})
+        task = (self.ws / "tasks/checks_fix.md").read_text(encoding="utf-8")
+        self.assertIn("нет файла картинки", task)
+        page = "docs/MD_eng/docs/user-manual/100_Orders.md"
+        line = next(l for l in (self.ws / page).read_text(encoding="utf-8").splitlines() if "image001.png" in l)
+        data = {"edits": [{"file": page, "find": line + "\n", "replace": "", "what": "убрана ссылка на картинку без файла",
+                           "evidence": [{"source": page, "quote": line}]}]}
+        self.answer("checks_fix", **data)
+        self.cli("agent")
+        q = self.items()["checks_fix"]
+        self.assertEqual((q["status"], len(q["applied"])), ("done", 1), q["problems"])
+        self.assertNotIn("image001.png", self.result("MD_eng/docs/user-manual/100_Orders.md"))
+        self.cli("agent")                                                          # находок больше нет, запись сохраняется
+        self.assertEqual(self.items()["checks_fix"]["status"], "done")
 
 
 class QuoteTest(AgentCase):

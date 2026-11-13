@@ -6,7 +6,9 @@
 
 from __future__ import annotations
 
+import difflib
 import os
+import re
 import shlex
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -18,7 +20,8 @@ from ..common import ROOT, load_json, read_text, save_text
 
 PROMPTS = ROOT / "agent" / "prompts"
 STALE_ID = "STALE"              # условная "задача" для проверки устаревших названий по всему релизу
-KIND_ORDER = ["decide", "write_doc", "stale", "release_notes"]
+CHECKS_ID = "CHECKS"             # условная "задача" для исправления находок сквозных проверок
+KIND_ORDER = ["decide", "write_doc", "stale", "checks", "release_notes"]
 DIGEST_LINES_PER_FILE = 60
 DIGEST_LINES_TOTAL = 500
 DIGEST_ORDER = {"source": 0, "i18n": 1, "style": 3}
@@ -70,6 +73,15 @@ def stale_unit(ds, stale: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
             "i18n": {"added": [], "removed": [{"locale": x["locale"], "value": x["text"]} for x in stale if not x["replacement"]],
                      "changed": [{"locale": x["locale"], "old": x["text"], "new": x["replacement"]} for x in stale if x["replacement"]]},
             "doc_candidates": [{"doc": m["file"], "why": []} for x in stale for m in x["mentions"]], "jira": None}
+
+
+def checks_unit(findings: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Условная задача из находок сквозных проверок: страницы - те, где находки."""
+    if not findings:
+        return None
+    pages = sorted({x["file"] for x in findings})
+    return {"id": CHECKS_ID, "task": None, "_checks": findings, "entries": [], "files": [],
+            "i18n": {"added": [], "removed": [], "changed": []}, "doc_candidates": [{"doc": p, "why": []} for p in pages], "jira": None}
 
 
 # ---------------------------------------------------------------- источники задачи
@@ -132,6 +144,8 @@ def _mentions_languages(u: Dict[str, Any]) -> bool:
 
 def unit_sources(ds, u: Dict[str, Any]) -> Dict[str, Path]:
     """Источники задачи: путь в папке агента -> настоящий файл. Первой идет сводка, затем патчи."""
+    if u.get("_checks"):
+        return {}                                    # исходных данных нет: находки и страницы напечатаны в задании
     base = f"sources/{unit_dir(u['id'])}"
     digest = ds.data_dir / "agent_digest" / f"{unit_dir(u['id'])}.md"
     save_text(digest, build_digest(ds, u))           # всегда заново: привязка файлов к задаче могла измениться
@@ -175,6 +189,12 @@ def _outline(ds, u: Dict[str, Any]) -> List[str]:
 
 def _sources_block(ds, u: Dict[str, Any]) -> List[str]:
     srcs = list(unit_sources(ds, u))
+    if u.get("_checks"):
+        return ["", "## Страницы документации", "", "Правки можно предлагать только для этих страниц.", ""] \
+            + [f"- `{p}`" for p in unit_pages(ds, u)] \
+            + ["", "## Разрешенные источники", "",
+               "Подтверждением служит дословная цитата со страницы из списка выше: строка с ошибкой и, если нужно, соседние "
+               "страницы или другой язык. В подтверждениях указывай путь страницы точно так, как он записан выше."]
     L = ["", "## Страницы документации", "", "Правки можно предлагать только для этих страниц.", ""]
     L += [f"- `{p}`" for p in unit_pages(ds, u)] or ["Страниц нет."]
     L += ["", "## Разрешенные источники", "",
@@ -242,6 +262,57 @@ def _stale_context(ds, u: Dict[str, Any]) -> str:
     return "\n".join(L + _sources_block(ds, u))
 
 
+VAR_LINE_RE = re.compile(r"\{\{\s*(\w+)\s*\}\}")
+
+
+def _variables_hint(ds, limit: int = 12) -> List[str]:
+    """Переменные документации: сколько раз встречаются и пример строки. По ним видно, чем заменять названия продуктов."""
+    count: Dict[str, int] = {}
+    sample: Dict[str, str] = {}
+    root = ds.result_dir / "MD_rus"
+    for p in sorted(root.rglob("*.md")) if root.is_dir() else []:
+        for line in (read_text(p) or "").splitlines():
+            for v in VAR_LINE_RE.findall(line):
+                count[v] = count.get(v, 0) + 1
+                if v not in sample and 20 < len(line) < 160:
+                    sample[v] = line.strip()
+    top = sorted(count, key=lambda v: (-count[v], v))[:limit]
+    return [f"- `{{{{ {v} }}}}` ({count[v]} раз): {sample.get(v, '')}" for v in top]
+
+
+def _similar_pages(ds, target: str, limit: int = 5) -> List[str]:
+    """Страницы, чье имя похоже на имя из битой ссылки: кандидаты на правильный адрес."""
+    root = ds.result_dir / "MD_rus" / "docs"
+    paths = sorted(str(p.relative_to(root)) for p in root.rglob("*.md")) if root.is_dir() else []
+    close = difflib.get_close_matches(Path(target.partition("#")[0]).name, sorted({Path(n).name for n in paths}), n=limit, cutoff=0.5)
+    return [n for n in paths if Path(n).name in close][:limit]
+
+
+def _checks_context(ds, u: Dict[str, Any]) -> str:
+    fx = u["_checks"]
+    L = ["## Находки проверок документации", "",
+         "Код проверил рабочую копию документации после всех правок. Ниже то, что нужно исправить правкой текста. «Новое» - "
+         "появилось в этом релизе; остальное лежит на страницах, которые правились в этом релизе.", ""]
+    names = {"links": "битая ссылка", "brands": "название продукта текстом", "images_missing": "нет файла картинки",
+             "parity": "RU и EN расходятся"}
+    for x in fx:
+        where = f"`docs/MD_{x['lang'].split('/')[0]}/docs/{x['file']}`" + (f":{x['line']}" if x["line"] else "")
+        L.append(f"- [{names[x['check']]}] {where}: `{x['target']}` - {x['why']}" + (" (новое)" if x["new"] else ""))
+    if any(x["check"] == "links" for x in fx):
+        L += ["", "Страницы с похожими именами для битых ссылок (проверь, что это та же страница, и бери путь только из этого списка или из текста самой страницы):", ""]
+        for x in fx:
+            if x["check"] == "links" and x["why"] != "подключаемого файла нет":
+                sim = _similar_pages(ds, x["target"])
+                L.append(f"- `{x['target']}`: " + (", ".join(f"`{n}`" for n in sim) if sim else "похожих страниц нет"))
+    if any(x["check"] == "brands" for x in fx):
+        L += ["", "Переменные документации (название продукта пишется переменной, значение берется из них; другие переменные не придумывай):", ""]
+        L += _variables_hint(ds)
+    if any(x["check"] == "parity" for x in fx):
+        L += ["", "Для расхождений RU и EN: русская страница главная, подгоняется английская. Чинишь только то, что видно по тексту "
+                  "страниц (число разделов, картинок, примечаний, подключаемых файлов, версии). Нет факта - `unknown`."]
+    return "\n".join(L + _sources_block(ds, u))
+
+
 def _release_notes_context(ds, units: Dict[str, Any], decisions: Dict[str, str]) -> str:
     v = ds.versions
     prev = f"docs/MD_rus/docs/{P.RELEASE_NOTES_DIR}/{v['previous_release_notes_file']}"
@@ -270,6 +341,8 @@ def render_task(ds, item: Dict[str, Any], units_by_id: Dict[str, Any], conf: Dic
         body = _release_notes_context(ds, units_by_id, decisions)
     elif item["kind"] == "stale":
         body = _stale_context(ds, units_by_id[STALE_ID])
+    elif item["kind"] == "checks":
+        body = _checks_context(ds, units_by_id[CHECKS_ID])
     else:
         body = _unit_context(ds, units_by_id[item["unit"]], conf)
     retry = ""
