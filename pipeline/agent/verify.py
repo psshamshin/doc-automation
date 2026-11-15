@@ -360,8 +360,8 @@ def verify_answer(ds, u: Dict[str, Any], kind: str, answer: Dict[str, Any], docs
                 for t in QUOTED_RE.findall(line):
                     raw = next(x for x in t if x)
                     term = _norm(raw)
-                    if term in vocab or term in page_norm or term in known:
-                        continue
+                    if term in vocab or term in page_norm or term in known or "{{" in term:
+                        continue                           # с переменной документации - не название элемента интерфейса
                     if term.lower() in exact:              # то же название другим регистром: берется написание интерфейса
                         new = new.replace(raw, exact[term.lower()])
                         continue

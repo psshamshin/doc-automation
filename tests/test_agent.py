@@ -319,13 +319,13 @@ class BrandFixTest(AgentCase):
 
     def fix(self, variable_value):
         (self.data / P.SLOT_DOCS_OLD / ".gitlab-ci.yml").write_text(f'variables:\n  PRODUCT_NAME: "{variable_value}"\n', encoding="utf-8")
-        for lang, extra in (("rus", "Сервис LUNA POINT работает."), ("eng", "{{ PRODUCT_NAME }}")):
+        for lang, extra in (("rus", "Сервис LUNA POINT работает. См. «LUNA POINT. Руководство»."), ("eng", "{{ PRODUCT_NAME }}")):
             path = self.out / P.OUT_RESULT / f"MD_{lang}/docs/user-manual/100_Orders.md"
             path.write_text(path.read_text(encoding="utf-8") + f"\n{extra}\n", encoding="utf-8")
         self.start("--cmd", STUB, **{"NOTASK:0.10.0#7": 1})
         page = "docs/MD_rus/docs/user-manual/100_Orders.md"
-        line = "Сервис LUNA POINT работает."
-        self.answer("checks_fix", edits=[{"file": page, "find": line, "replace": "Сервис {{ PRODUCT_NAME }} работает.",
+        line = "Сервис LUNA POINT работает. См. «LUNA POINT. Руководство»."
+        self.answer("checks_fix", edits=[{"file": page, "find": line, "replace": "Сервис {{ PRODUCT_NAME }} работает. См. «{{ PRODUCT_NAME }}. Руководство».",
                                          "what": "название продукта переменной", "evidence": [{"source": page, "quote": line}]}])
         self.cli("agent")
         return self.items()["checks_fix"]
