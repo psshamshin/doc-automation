@@ -90,8 +90,8 @@ def run(ds, units: List[Dict[str, Any]], conf: Dict[str, Any], decisions: Dict[s
         stale: List[Dict[str, Any]], *, dry_run: bool, cmd: Optional[str], redo: bool, timeout: int) -> Dict[str, Any]:
     """Готовит задания, проверяет ответы, вносит принятые правки. Принятый ответ повторно не вносится."""
     by_id = {u["id"]: u for u in units}
-    if stale_unit(ds, stale):
-        by_id[STALE_ID] = stale_unit(ds, stale)
+    if stale_unit(ds, stale, units):
+        by_id[STALE_ID] = stale_unit(ds, stale, units)
     command = agent_cmd(cmd)
     launch = bool(command) and not dry_run
     w = workspace(ds)

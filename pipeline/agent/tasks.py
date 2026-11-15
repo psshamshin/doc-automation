@@ -60,13 +60,30 @@ def build_queue(units: List[Dict[str, Any]], decisions: Dict[str, str], stale: b
     return sorted(items, key=lambda i: (KIND_ORDER.index(i["kind"]), i["id"]))
 
 
-def stale_unit(ds, stale: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+OWNER_FILES = 8                  # файлов кода одной задачи-владельца, которые добавляются к заданию об устаревших названиях
+
+
+def stale_owners(x: Dict[str, Any], units: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Задачи, в чьих изменениях интерфейса исчез или изменился этот текст: их записи и файлы объясняют, что стало вместо него."""
+    out = []
+    for u in units:
+        i = u["i18n"]
+        gone = [y for y in i["removed"] if y["locale"] == x["locale"] and y["value"] == x["text"]]
+        gone += [y for y in i["changed"] if y["locale"] == x["locale"] and y["old"] == x["text"]]
+        if gone:
+            files = [f for f in u["files"] if f.get("relevant") and f.get("patch") and f["category"] in ("source", "i18n")]
+            out.append({"id": u["id"], "texts": (DRAFT.significant_texts(u) or [e["text"] for e in u["entries"]])[:2], "files": files[:OWNER_FILES]})
+    return out
+
+
+def stale_unit(ds, stale: List[Dict[str, Any]], units: Optional[List[Dict[str, Any]]] = None) -> Optional[Dict[str, Any]]:
     """Условная задача из списка устаревших названий: у нее те же поля, что у обычной."""
     if not stale:
         return None
+    stale = [dict(x, owners=stale_owners(x, units or [])) for x in stale]
     files: Dict[str, Dict[str, Any]] = {}
     for x in stale:
-        for f in x["files"]:
+        for f in x["files"] + [f for o in x["owners"] for f in o["files"]]:
             files.setdefault(f["path"], {"path": f["path"], "relevant": True, "patch": f.get("patch"),
                                          "category": f["category"], "status": f["status"], "reachable_from_app": True})
     return {"id": STALE_ID, "task": None, "_stale": stale, "entries": [], "files": list(files.values()),
@@ -252,6 +269,8 @@ def _stale_context(ds, u: Dict[str, Any]) -> str:
         else:
             L.append("- использование ключа в коде прежней версии не найдено: возможно, ключ не использовался; "
                      "правь, только если по патчам видно, какой элемент интерфейса заменил название")
+        for o in x.get("owners", []):
+            L.append(f"- текст исчез в задаче {o['id']}: " + ("; ".join(o["texts"]) or "записи нет") + ". Ее изменения кода есть в сводке и в патчах")
         L.append("- упоминания в документации:")
         L += [f"    - `docs/MD_{x['lang']}/docs/{m['file']}`:{m['line']}: {m['text'][:160]}" for m in x["mentions"]]
         L.append("")
