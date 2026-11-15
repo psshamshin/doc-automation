@@ -125,7 +125,8 @@ def check_tree(root: Path, image_root: Path, lang: str) -> Dict[str, List[Dict[s
                         continue
                 if anchor and re.fullmatch(r"[a-z0-9\-_]+", anchor) and anchors.get(dest) and anchor not in anchors[dest]:
                     links.append({"lang": lang, "file": page, "line": n, "target": target, "why": "раздела с таким якорем нет"})
-            if not in_code and P.RELEASE_NOTES_DIR not in page.split("/"):
+            if not in_code and P.RELEASE_NOTES_DIR not in page.split("/") and not line.lstrip().startswith(("|", "+")):
+                # строки таблиц не проверяются: замена названия переменной ломает выравнивание таблицы
                 clean = re.sub(r"\{\{[^}]*\}\}|\]\([^)]*\)|`[^`]*`", "", line)
                 m = BRAND_RE.search(clean)
                 if m:

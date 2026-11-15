@@ -171,3 +171,20 @@ docs/                       RULES.md (правила), VERIFY.md (как про�
 - Проверка кода не оценивает смысл: она убеждается, что цитата, название и фрагмент существуют.
 - Названия задач в Jira внутренние, в release notes не идут.
 - Языки интерфейса, доступные пользователям, из кода не видны.
+
+## Просмотр результата как сайт документации
+
+Скрипт `scripts/build_site.py` собирает документацию в сайт MkDocs: три варианта рядом (было, пайплайн, техпис), RU и EN.
+Нужны `pip install mkdocs mkdocs-material mkdocs-awesome-pages-plugin` и `pandoc` (`brew install pandoc`).
+
+```
+python3 scripts/build_site.py --version 2.3.0 --out site \
+  --variant "было 2.2.0=input/luna-point-2.2.0/docs/src" \
+  --variant "пайплайн=output/2.3.0/result@input/luna-point-2.2.0/docs/src" \
+  --variant "техпис 2.3.0=../reference/luna-point-2.3.0/docs/src"
+python3 -m http.server -d site 8000
+```
+
+Откройте http://localhost:8000. Скрипт подставляет переменные документации из `.gitlab-ci.yml`, вставляет подключаемые
+файлы, превращает таблицы с рамкой в HTML и берет картинки из документации прошлого релиза. Это упрощенная сборка:
+фирменная тема и PDF репозитория документации не используются.

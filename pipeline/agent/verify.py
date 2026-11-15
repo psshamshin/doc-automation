@@ -12,9 +12,11 @@ import json
 import posixpath
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .. import docs as DOCS
+from .. import product as P
+from ..checks import BRAND_RE
 from ..common import load_json, read_text, save_text
 from .tasks import _checks_context, _stale_context, _unit_context, unit_pages, unit_sources
 
@@ -92,6 +94,80 @@ def _ui_vocabulary(ds) -> Dict[str, set]:
                 vocab[lang_of[r["locale"]]].add(_norm(r["value"]))
         ds._vocab = vocab
     return ds._vocab
+
+
+# ---------------------------------------------------------------- форма правки
+
+def _line_key(line: str) -> str:
+    """Строка без различий, которые агент вносит случайно: пробелы по краям и подряд, длинное и короткое тире."""
+    return " ".join(line.replace("\u2014", "-").replace("\u2013", "-").split())
+
+
+def locate(text: str, find: str) -> Optional[str]:
+    """Фрагмент страницы, который агент имел в виду, если дословно его нет: те же строки с точностью до пробелов и тире.
+
+    Возвращает настоящий текст страницы, если такой блок строк ровно один; иначе None.
+    """
+    want = [_line_key(l) for l in find.strip("\n").split("\n")]
+    if not any(want):
+        return None
+    lines = text.split("\n")
+    keys = [_line_key(l) for l in lines]
+    hits = [i for i in range(len(keys) - len(want) + 1) if keys[i:i + len(want)] == want]
+    return "\n".join(lines[hits[0]:hits[0] + len(want)]) if len(hits) == 1 else None
+
+
+def keep_unchanged(find: str, new: str) -> str:
+    """Строки, которые правка не меняет по смыслу, остаются как были на странице (пробелы, тире): правка не шумит."""
+    a, b = find.split("\n"), new.split("\n")
+    out: List[str] = []
+    ops = difflib.SequenceMatcher(None, [_line_key(x) for x in a], [_line_key(x) for x in b], autojunk=False).get_opcodes()
+    for tag, i1, i2, j1, j2 in ops:
+        out += a[i1:i2] if tag == "equal" else b[j1:j2]
+    return "\n".join(out)
+
+
+TERM_DASH_RE = re.compile(r'(["\u00bb\u201d]) - ')
+
+
+def match_dash_style(page: str, find: str, new: str) -> str:
+    """Новые строки в стиле страницы: если на ней «термин» - определение пишется длинным тире, агентский дефис заменяется им."""
+    if len(re.findall(r'["\u00bb\u201d] \u2014 ', page)) < 3:
+        return new
+    old = {_line_key(l) for l in find.split("\n")}
+    return "\n".join(l if _line_key(l) in old else TERM_DASH_RE.sub("\\1 \u2014 ", l) for l in new.split("\n"))
+
+
+def fit_table(find: str, new: str) -> Tuple[str, Optional[str]]:
+    """Правка таблицы с рамкой: строки подгоняются под ширину рамки, а если не помещаются или колонки сдвинуты, правка отклоняется.
+
+    Возвращает (текст, причина отказа). Подгонка - только пробелы перед последней вертикальной чертой.
+    """
+    is_row = lambda l: l.lstrip().startswith(("|", "+"))
+    rows = [l.rstrip() for l in find.split("\n") if is_row(l)]
+    widths = {len(l) for l in rows}
+    if len(widths) != 1:
+        return new, None
+    w = widths.pop()
+    joints = {i for l in rows if l.startswith("+") for i, c in enumerate(l) if c == "+"}
+    out = []
+    for line in new.split("\n"):
+        cut = line.rstrip()
+        if cut.startswith("|") and cut.endswith("|") and len(cut) != w:
+            body = cut[:-1].rstrip()
+            if len(body) <= w - 1:
+                line = body + " " * (w - 1 - len(body)) + "|"
+        out.append(line)
+    fixed = "\n".join(out)
+    for line in fixed.split("\n"):
+        if not is_row(line):
+            continue
+        cut = line.rstrip()
+        if len(cut) != w:
+            return fixed, f"строка таблицы не помещается в рамку ({len(cut)} вместо {w}): сократи текст в ячейке"
+        if cut.startswith("|") and joints and any(i not in joints for i, c in enumerate(cut) if c == "|"):
+            return fixed, "колонки таблицы сдвинуты: вертикальные черты должны стоять под границами колонок"
+    return fixed, None
 
 
 # ---------------------------------------------------------------- документация в памяти
@@ -248,6 +324,10 @@ def verify_answer(ds, u: Dict[str, Any], kind: str, answer: Dict[str, Any], docs
         else:
             count = text.count(find)
             if count == 0:
+                real = locate(text, find)
+                if real is not None:
+                    find, count = real, text.count(real)       # те же строки с точностью до пробелов и тире
+            if count == 0:
                 probs.append(f"фрагмента find нет на странице дословно: «{_norm(find)[:70]}»")
             elif count > 1:
                 probs.append(f"фрагмент find встречается на странице {count} раза: возьми более длинный фрагмент")
@@ -259,6 +339,13 @@ def verify_answer(ds, u: Dict[str, Any], kind: str, answer: Dict[str, Any], docs
                 probs.append("метки скриншотов не ставятся: скриншоты к проверке определяет код")
             if "<!--" in new and "<!--" not in find:
                 probs.append("в новом тексте комментарий: вопросы и пояснения пишутся в ответе, а не в документации")
+            new, wide = fit_table(find, new)
+            if wide:
+                probs.append(wide)
+            if kind == "checks" and BRAND_RE.search(find) and not BRAND_RE.search(new):
+                values = DOCS.ci_variables(ds.slot(P.SLOT_DOCS_OLD))
+                if _norm(VAR_RE.sub(lambda m: values.get(m.group(1), m.group(0)), new)) != _norm(find):
+                    probs.append("замена названия продукта переменной допустима, только если после подстановки значения текст остается тем же слово в слово")
             for var in sorted(set(VAR_RE.findall(new)) - set(VAR_RE.findall(find))):
                 if var not in docs.variables():
                     probs.append(f"переменной {{{{ {var} }}}} нет ни на одной странице документации")
@@ -276,6 +363,10 @@ def verify_answer(ds, u: Dict[str, Any], kind: str, answer: Dict[str, Any], docs
         probs += evidence_problems(e.get("evidence"))
         if probs:
             bad.append(entry)
+            continue
+        new = match_dash_style(text, find, keep_unchanged(find, new))
+        if new == find:
+            bad.append(dict(entry, problems=["после сохранения исходного форматирования правка ничего не меняет"]))
             continue
         staged[f] = text.replace(find, new, 1)
         ops.append({"file": f, "find": find, "replace": new, "what": e["what"]})

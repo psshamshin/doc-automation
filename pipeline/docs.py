@@ -24,6 +24,29 @@ VAR_RE = re.compile(r"\{\{\s*([A-Z_]+)\s*\}\}")
 TEXT_SUFFIX = {".md", ".pages", ".yml", ".yaml"}
 
 
+def ci_variables(start: Path) -> Dict[str, str]:
+    """Переменные документации ({{PRODUCT_NAME}} и т.п.) и их значения из блока `variables:` файла .gitlab-ci.yml репозитория."""
+    for d in [start, *list(start.resolve().parents)[:4]]:
+        f = d / ".gitlab-ci.yml"
+        text = read_text(f) if f.is_file() else None
+        if not text:
+            continue
+        out: Dict[str, str] = {}
+        inside = False
+        for line in text.splitlines():
+            if re.match(r"^variables:\s*$", line):
+                inside = True
+            elif inside and line and not line.startswith((" ", "\t")):
+                break
+            elif inside:
+                m = re.match(r"^\s+([A-Za-z_]\w*):\s*(.*?)\s*$", line)
+                if m:
+                    out[m.group(1)] = m.group(2).strip("\"'")
+        if out:
+            return out
+    return {}
+
+
 def docs_root(doc_repo: Path, lang: str) -> Path:
     return doc_repo / "docs" / "src" / f"MD_{lang}" / "docs"
 
