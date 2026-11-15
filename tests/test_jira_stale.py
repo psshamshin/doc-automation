@@ -80,6 +80,14 @@ class StaleNamesTest(Workdir):
         self.assertEqual([(m["file"], m["line"]) for m in self.stale[0]["mentions"]], [("user-manual/050_Work.md", 5)])
         self.assertTrue(all("«Сбросить»" in m["text"] for m in self.stale[0]["mentions"]))          # только в кавычках
 
+    def test_task_that_removed_the_text_and_its_code_are_given_to_the_agent(self):
+        mark_review(self.out)
+        self.cli("agent")
+        ws = self.out / P.OUT_WORKSPACE
+        task = (ws / "tasks/stale_names.md").read_text(encoding="utf-8")
+        self.assertIn("текст исчез в задаче GUI-105", task)
+        self.assertIn("OrdersFilter.tsx", (ws / "sources/STALE/changes.md").read_text(encoding="utf-8"))      # патчи задачи-владельца
+
     def test_shown_in_review_and_given_to_the_agent_as_one_task(self):
         self.assertIn("| rus | «Сбросить» | выяснит агент | `user-manual/050_Work.md` (1) |",
                       (self.out / V.FILE_NAME).read_text(encoding="utf-8"))
