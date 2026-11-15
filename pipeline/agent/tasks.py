@@ -60,6 +60,7 @@ def build_queue(units: List[Dict[str, Any]], decisions: Dict[str, str], stale: b
     return sorted(items, key=lambda i: (KIND_ORDER.index(i["kind"]), i["id"]))
 
 
+OWNERS_PER_TEXT = 2             # задач-владельцев на одно устаревшее название
 OWNER_FILES = 8                  # файлов кода одной задачи-владельца, которые добавляются к заданию об устаревших названиях
 
 
@@ -72,8 +73,10 @@ def stale_owners(x: Dict[str, Any], units: List[Dict[str, Any]]) -> List[Dict[st
         gone += [y for y in i["changed"] if y["locale"] == x["locale"] and y["old"] == x["text"]]
         if gone:
             files = [f for f in u["files"] if f.get("relevant") and f.get("patch") and f["category"] in ("source", "i18n")]
-            out.append({"id": u["id"], "texts": (DRAFT.significant_texts(u) or [e["text"] for e in u["entries"]])[:2], "files": files[:OWNER_FILES]})
-    return out
+            out.append({"id": u["id"], "size": len(i["removed"]) + len(i["changed"]),
+                        "texts": (DRAFT.significant_texts(u) or [e["text"] for e in u["entries"]])[:2], "files": files[:OWNER_FILES]})
+    # задача с широкой переработкой переводов (сотни текстов) убирает почти все названия: выше те, кто убрал меньше, то есть точнее
+    return sorted(out, key=lambda o: (o["size"], o["id"]))[:OWNERS_PER_TEXT]
 
 
 def stale_unit(ds, stale: List[Dict[str, Any]], units: Optional[List[Dict[str, Any]]] = None) -> Optional[Dict[str, Any]]:
