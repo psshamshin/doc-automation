@@ -355,11 +355,17 @@ def verify_answer(ds, u: Dict[str, Any], kind: str, answer: Dict[str, Any], docs
             m = re.search(r"MD_(\w+)/", f)
             vocab = _ui_vocabulary(ds).get(m.group(1) if m else "", set())
             page_norm = _norm(text)
+            exact = {v.lower(): v for v in vocab}
             for line in new.splitlines():
                 for t in QUOTED_RE.findall(line):
-                    term = _norm(next(x for x in t if x))
-                    if term not in vocab and term not in page_norm and term not in known:
-                        probs.append(f"названия «{term}» нет ни в текстах интерфейса новой версии, ни на странице, ни в записях задачи")
+                    raw = next(x for x in t if x)
+                    term = _norm(raw)
+                    if term in vocab or term in page_norm or term in known:
+                        continue
+                    if term.lower() in exact:              # то же название другим регистром: берется написание интерфейса
+                        new = new.replace(raw, exact[term.lower()])
+                        continue
+                    probs.append(f"названия «{term}» нет ни в текстах интерфейса новой версии, ни на странице, ни в записях задачи")
         probs += evidence_problems(e.get("evidence"))
         if probs:
             bad.append(entry)
@@ -370,6 +376,15 @@ def verify_answer(ds, u: Dict[str, Any], kind: str, answer: Dict[str, Any], docs
             continue
         staged[f] = text.replace(find, new, 1)
         ops.append({"file": f, "find": find, "replace": new, "what": e["what"]})
+    if kind in ("write_doc", "decide", "stale"):             # Ж1: правка RU без той же правки EN не закончена
+        done = {o["file"] for o in ops} | {b["file"] for b in bad}
+        for f in sorted({o["file"] for o in ops if "/MD_rus/" in o["file"]}):
+            en = f.replace("/MD_rus/", "/MD_eng/")
+            base = DOCS.docs_root(ds.slot(P.SLOT_DOCS_OLD), "eng") / en[len("docs/MD_eng/docs/"):]
+            untouched = staged.get(en, docs.text(en)) == read_text(base)     # английскую страницу в этом релизе еще не правили
+            if en in pages and en not in done and untouched:
+                bad.append({"n": "EN", "file": en, "what": "нет правки английской страницы",
+                            "problems": [f"страница RU изменена, а {en} нет: дай те же по смыслу правки EN (названия из текстов интерфейса EN)"]})
     problems = [f"решение: {p}" for p in decision_problems] + \
                [f"правка {b['n']} ({b['file']}, «{b['what']}»): {p}" for b in bad for p in b["problems"]]
     return {"problems": problems, "ops": ops, "bad": bad, "staged": staged, "approx": approx, "notes": notes,

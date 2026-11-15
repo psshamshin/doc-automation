@@ -12,6 +12,8 @@ from tests.helpers import STUB, Workdir, mark_review
 
 PAGE = "docs/MD_rus/docs/user-manual/100_Orders.md"
 FIND = "Фильтр «Статус» отбирает заказы по статусу."
+PAGE_EN = "docs/MD_eng/docs/user-manual/100_Orders.md"
+FIND_EN = 'The "Status" filter selects orders by status.'
 
 
 class AgentCase(Workdir):
@@ -50,8 +52,11 @@ class AgentCase(Workdir):
         (self.ws / "answers" / f"{item}.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
 
     def edit(self, quote=None, replace=None, find=FIND, page=PAGE):
-        return {"edits": [{"file": page, "find": find, "replace": replace or FIND[:-1] + " и по дате.", "what": "уточнение",
-                           "evidence": [{"source": "changelog", "quote": quote or self.entry()}]}]}
+        ev = [{"source": "changelog", "quote": quote or self.entry()}]
+        edits = [{"file": page, "find": find, "replace": replace or FIND[:-1] + " и по дате.", "what": "уточнение", "evidence": ev}]
+        if page == PAGE:                                                  # Ж1: та же правка на английской странице
+            edits.append({"file": PAGE_EN, "find": FIND_EN, "replace": FIND_EN[:-1] + " and by date.", "what": "clarified", "evidence": ev})
+        return {"edits": edits}
 
 
 class WorkspaceTest(AgentCase):
@@ -164,7 +169,7 @@ class RejectionTest(AgentCase):
             with self.subTest(mode):
                 self.cli("agent", "--cmd", f"{STUB} {mode}", "--redo")
                 q = self.items()["GUI-105__write_doc"]
-                self.assertEqual((q["status"], len(q["applied"])), ("done", 1))
+                self.assertEqual((q["status"], len(q["applied"])), ("done", 2))
                 self.assertTrue(any(note in n for n in q["notes"]), q["notes"])
 
     def test_one_bad_edit_does_not_cancel_the_good_one(self):
@@ -176,11 +181,11 @@ class RejectionTest(AgentCase):
         self.answer("GUI-105__write_doc", **good)
         self.cli("agent")
         q = self.items()["GUI-105__write_doc"]
-        self.assertEqual((q["status"], len(q["applied"])), ("partial", 1))
-        self.assertTrue(any("правка 2" in p for p in q["problems"]), q["problems"])
+        self.assertEqual((q["status"], len(q["applied"])), ("partial", 2))            # RU и EN приняты, третья отклонена
+        self.assertTrue(any("правка 3" in p for p in q["problems"]), q["problems"])
         self.assertIn("и по дате.", self.result())
         task = (self.ws / "tasks/GUI-105__write_doc__retry.md").read_text(encoding="utf-8")
-        self.assertIn("правка 2", task)
+        self.assertIn("правка 3", task)
 
     def test_new_variable_and_missing_link_are_rejected(self):
         self.start(**{"NOTASK:0.10.0#7": 1})
@@ -190,7 +195,9 @@ class RejectionTest(AgentCase):
                 self.cli("agent")
                 q = self.items()["GUI-105__write_doc"]
                 self.assertTrue(any(message in p for p in q["problems"]), q["problems"])
-        self.answer("GUI-105__write_doc", **self.edit(replace=FIND + "\n\nСм. [работу](./050_Work.md)."))
+        data = self.edit(replace=FIND + "\n\nСм. [работу](./050_Work.md).")
+        data["edits"] = data["edits"][:1]                                # английскую страницу уже правили в первой попытке
+        self.answer("GUI-105__write_doc", **data)
         self.cli("agent")
         self.assertEqual(self.items()["GUI-105__write_doc"]["status"], "done")
 
@@ -233,7 +240,7 @@ class RejectionTest(AgentCase):
         self.answer("GUI-105__write_doc", status="unknown", questions=["как называется кнопка?"], **self.edit())
         self.cli("agent")
         q = self.items()["GUI-105__write_doc"]
-        self.assertEqual((q["status"], len(q["applied"])), ("unknown", 1))
+        self.assertEqual((q["status"], len(q["applied"])), ("unknown", 2))
         self.assertIn("и по дате.", self.result())
 
 
@@ -287,6 +294,24 @@ class ChainTest(AgentCase):
         self.cli("agent")                                                          # находок больше нет, запись сохраняется
         self.assertEqual(self.items()["checks_fix"]["status"], "done")
         self.assertTrue((self.ws / "tasks/checks_fix.md").is_file())
+
+
+class EnglishTooTest(AgentCase):
+    def test_russian_edit_without_english_one_is_sent_back(self):
+        self.start(**{"NOTASK:0.10.0#7": 1})
+        data = self.edit()
+        data["edits"] = data["edits"][:1]
+        self.answer("GUI-105__write_doc", **data)
+        self.cli("agent")
+        q = self.items()["GUI-105__write_doc"]
+        self.assertEqual((q["status"], len(q["applied"])), ("partial", 1))
+        self.assertTrue(any("правка EN" in p and "MD_eng" in p for p in q["problems"]), q["problems"])
+
+    def test_ui_name_in_other_case_is_written_as_in_the_interface(self):
+        self.start(**{"NOTASK:0.10.0#7": 1})
+        self.answer("GUI-105__write_doc", **self.edit(replace=FIND[:-1] + " и по полю «дата заказа»."))
+        self.cli("agent")
+        self.assertIn("«Дата заказа»", self.result())
 
 
 class BrandFixTest(AgentCase):
