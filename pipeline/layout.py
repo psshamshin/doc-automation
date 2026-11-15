@@ -167,10 +167,14 @@ class Dataset:
     def has(self, slot: str) -> bool:
         return self.roles.get(slot) is not None
 
+    def reference_candidates(self) -> List[Path]:
+        """Где ищется документация техписа без параметра --reference: reference/ в проекте и рядом с проектом."""
+        return [d / P.REFERENCE_DIR / sub for d in (self.base, self.base.parent) for sub in (self.name, "")]
+
     def use_reference(self, path: Optional[str] = None) -> bool:
         """Документация техписа для сравнения из отдельной папки: параметр --reference, иначе reference/<набор>/
-        или reference/. Так ее можно не класть во входные данные, пока работает агент."""
-        cands = [Path(path)] if path else [self.base / P.REFERENCE_DIR / self.name, self.base / P.REFERENCE_DIR]
+        или reference/ в проекте или рядом с ним. Так ее можно не класть во входные данные, пока работает агент."""
+        cands = [Path(path)] if path else self.reference_candidates()
         for d in cands:
             if not d.is_dir():
                 if path:
