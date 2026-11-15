@@ -13,6 +13,7 @@ import shlex
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from .. import docs as DOCS
 from .. import draft as DRAFT
 from .. import product as P
 from .. import validation as V
@@ -265,19 +266,13 @@ def _stale_context(ds, u: Dict[str, Any]) -> str:
 VAR_LINE_RE = re.compile(r"\{\{\s*(\w+)\s*\}\}")
 
 
-def _variables_hint(ds, limit: int = 12) -> List[str]:
-    """Переменные документации: сколько раз встречаются и пример строки. По ним видно, чем заменять названия продуктов."""
-    count: Dict[str, int] = {}
-    sample: Dict[str, str] = {}
-    root = ds.result_dir / "MD_rus"
-    for p in sorted(root.rglob("*.md")) if root.is_dir() else []:
-        for line in (read_text(p) or "").splitlines():
-            for v in VAR_LINE_RE.findall(line):
-                count[v] = count.get(v, 0) + 1
-                if v not in sample and 20 < len(line) < 160:
-                    sample[v] = line.strip()
-    top = sorted(count, key=lambda v: (-count[v], v))[:limit]
-    return [f"- `{{{{ {v} }}}}` ({count[v]} раз): {sample.get(v, '')}" for v in top]
+def _variables_hint(ds, limit: int = 20) -> List[str]:
+    """Переменные документации и их значения: по ним видно, какой переменной можно заменить название слово в слово."""
+    values = DOCS.ci_variables(ds.slot(P.SLOT_DOCS_OLD))
+    if not values:
+        return ["значения переменных неизвестны: заменяй, только если уверен, что переменная дает то же самое название"]
+    return [f"- `{{{{ {k} }}}}` = {v}" for k, v in list(values.items())[:limit]
+            if k.startswith(("PRODUCT_", "COMPANY_")) or "NAME" in k]
 
 
 def _similar_pages(ds, target: str, limit: int = 5) -> List[str]:
@@ -305,7 +300,7 @@ def _checks_context(ds, u: Dict[str, Any]) -> str:
                 sim = _similar_pages(ds, x["target"])
                 L.append(f"- `{x['target']}`: " + (", ".join(f"`{n}`" for n in sim) if sim else "похожих страниц нет"))
     if any(x["check"] == "brands" for x in fx):
-        L += ["", "Переменные документации (название продукта пишется переменной, значение берется из них; другие переменные не придумывай):", ""]
+        L += ["", "Переменные документации и их значения. Название продукта заменяется переменной, только если ее значение совпадает с заменяемым текстом слово в слово; иначе не правь:", ""]
         L += _variables_hint(ds)
     if any(x["check"] == "parity" for x in fx):
         L += ["", "Для расхождений RU и EN: русская страница главная, подгоняется английская. Чинишь только то, что видно по тексту "

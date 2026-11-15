@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .. import docs as DOCS
+from .. import product as P
+from ..checks import BRAND_RE
 from ..common import load_json, read_text, save_text
 from .tasks import _checks_context, _stale_context, _unit_context, unit_pages, unit_sources
 
@@ -92,6 +94,48 @@ def _ui_vocabulary(ds) -> Dict[str, set]:
                 vocab[lang_of[r["locale"]]].add(_norm(r["value"]))
         ds._vocab = vocab
     return ds._vocab
+
+
+# ---------------------------------------------------------------- форма правки
+
+def _line_key(line: str) -> str:
+    """Строка без различий, которые агент вносит случайно: пробелы по краям и подряд, длинное и короткое тире."""
+    return " ".join(line.replace("\u2014", "-").replace("\u2013", "-").split())
+
+
+def locate(text: str, find: str) -> Optional[str]:
+    """Фрагмент страницы, который агент имел в виду, если дословно его нет: те же строки с точностью до пробелов и тире.
+
+    Возвращает настоящий текст страницы, если такой блок строк ровно один; иначе None.
+    """
+    want = [_line_key(l) for l in find.strip("\n").split("\n")]
+    if not any(want):
+        return None
+    lines = text.split("\n")
+    keys = [_line_key(l) for l in lines]
+    hits = [i for i in range(len(keys) - len(want) + 1) if keys[i:i + len(want)] == want]
+    return "\n".join(lines[hits[0]:hits[0] + len(want)]) if len(hits) == 1 else None
+
+
+def keep_unchanged(find: str, new: str) -> str:
+    """Строки, которые правка не меняет по смыслу, остаются как были на странице (пробелы, тире): правка не шумит."""
+    a, b = find.split("\n"), new.split("\n")
+    out: List[str] = []
+    ops = difflib.SequenceMatcher(None, [_line_key(x) for x in a], [_line_key(x) for x in b], autojunk=False).get_opcodes()
+    for tag, i1, i2, j1, j2 in ops:
+        out += a[i1:i2] if tag == "equal" else b[j1:j2]
+    return "\n".join(out)
+
+
+def table_width_problem(find: str, new: str) -> Optional[str]:
+    """Правка таблицы с рамкой: все строки таблицы одной ширины, иначе таблица перестанет собираться."""
+    rows = lambda t: [l.rstrip() for l in t.split("\n") if l.lstrip().startswith(("|", "+"))]
+    widths = {len(l) for l in rows(find)}
+    if len(widths) != 1:
+        return None
+    w = widths.pop()
+    wrong = [l for l in rows(new) if len(l) != w]
+    return f"строка таблицы другой ширины ({len(wrong[0])} вместо {w}): выровняй пробелами по рамке" if wrong else None
 
 
 # ---------------------------------------------------------------- документация в памяти
@@ -248,6 +292,10 @@ def verify_answer(ds, u: Dict[str, Any], kind: str, answer: Dict[str, Any], docs
         else:
             count = text.count(find)
             if count == 0:
+                real = locate(text, find)
+                if real is not None:
+                    find, count = real, text.count(real)       # те же строки с точностью до пробелов и тире
+            if count == 0:
                 probs.append(f"фрагмента find нет на странице дословно: «{_norm(find)[:70]}»")
             elif count > 1:
                 probs.append(f"фрагмент find встречается на странице {count} раза: возьми более длинный фрагмент")
@@ -259,6 +307,13 @@ def verify_answer(ds, u: Dict[str, Any], kind: str, answer: Dict[str, Any], docs
                 probs.append("метки скриншотов не ставятся: скриншоты к проверке определяет код")
             if "<!--" in new and "<!--" not in find:
                 probs.append("в новом тексте комментарий: вопросы и пояснения пишутся в ответе, а не в документации")
+            wide = table_width_problem(find, new)
+            if wide:
+                probs.append(wide)
+            if kind == "checks" and BRAND_RE.search(find) and not BRAND_RE.search(new):
+                values = DOCS.ci_variables(ds.slot(P.SLOT_DOCS_OLD))
+                if _norm(VAR_RE.sub(lambda m: values.get(m.group(1), m.group(0)), new)) != _norm(find):
+                    probs.append("замена названия продукта переменной допустима, только если после подстановки значения текст остается тем же слово в слово")
             for var in sorted(set(VAR_RE.findall(new)) - set(VAR_RE.findall(find))):
                 if var not in docs.variables():
                     probs.append(f"переменной {{{{ {var} }}}} нет ни на одной странице документации")
@@ -276,6 +331,10 @@ def verify_answer(ds, u: Dict[str, Any], kind: str, answer: Dict[str, Any], docs
         probs += evidence_problems(e.get("evidence"))
         if probs:
             bad.append(entry)
+            continue
+        new = keep_unchanged(find, new)
+        if new == find:
+            bad.append(dict(entry, problems=["после сохранения исходного форматирования правка ничего не меняет"]))
             continue
         staged[f] = text.replace(find, new, 1)
         ops.append({"file": f, "find": find, "replace": new, "what": e["what"]})

@@ -289,6 +289,32 @@ class ChainTest(AgentCase):
         self.assertTrue((self.ws / "tasks/checks_fix.md").is_file())
 
 
+class BrandFixTest(AgentCase):
+    """Название продукта заменяется переменной только если ее значение дает тот же текст."""
+
+    def fix(self, variable_value):
+        (self.data / P.SLOT_DOCS_OLD / ".gitlab-ci.yml").write_text(f'variables:\n  PRODUCT_NAME: "{variable_value}"\n', encoding="utf-8")
+        for lang, extra in (("rus", "Сервис LUNA POINT работает."), ("eng", "{{ PRODUCT_NAME }}")):
+            path = self.out / P.OUT_RESULT / f"MD_{lang}/docs/user-manual/100_Orders.md"
+            path.write_text(path.read_text(encoding="utf-8") + f"\n{extra}\n", encoding="utf-8")
+        self.start("--cmd", STUB, **{"NOTASK:0.10.0#7": 1})
+        page = "docs/MD_rus/docs/user-manual/100_Orders.md"
+        line = "Сервис LUNA POINT работает."
+        self.answer("checks_fix", edits=[{"file": page, "find": line, "replace": "Сервис {{ PRODUCT_NAME }} работает.",
+                                         "what": "название продукта переменной", "evidence": [{"source": page, "quote": line}]}])
+        self.cli("agent")
+        return self.items()["checks_fix"]
+
+    def test_same_value_is_accepted(self):
+        q = self.fix("LUNA POINT")
+        self.assertEqual(len(q["applied"]), 1, q["problems"])
+
+    def test_other_value_is_rejected(self):
+        q = self.fix("LP5")
+        self.assertEqual(q["applied"], [])
+        self.assertTrue(any("слово в слово" in p for p in q["problems"]), q["problems"])
+
+
 class QuoteTest(AgentCase):
     def test_real_quotes_are_accepted_and_invented_are_not(self):
         self.start(**{"NOTASK:0.10.0#7": 1})
