@@ -127,6 +127,17 @@ def keep_unchanged(find: str, new: str) -> str:
     return "\n".join(out)
 
 
+TERM_DASH_RE = re.compile(r'(["\u00bb\u201d]) - ')
+
+
+def match_dash_style(page: str, find: str, new: str) -> str:
+    """Новые строки в стиле страницы: если на ней «термин» - определение пишется длинным тире, агентский дефис заменяется им."""
+    if len(re.findall(r'["\u00bb\u201d] \u2014 ', page)) < 3:
+        return new
+    old = {_line_key(l) for l in find.split("\n")}
+    return "\n".join(l if _line_key(l) in old else TERM_DASH_RE.sub("\\1 \u2014 ", l) for l in new.split("\n"))
+
+
 def fit_table(find: str, new: str) -> Tuple[str, Optional[str]]:
     """Правка таблицы с рамкой: строки подгоняются под ширину рамки, а если не помещаются или колонки сдвинуты, правка отклоняется.
 
@@ -353,7 +364,7 @@ def verify_answer(ds, u: Dict[str, Any], kind: str, answer: Dict[str, Any], docs
         if probs:
             bad.append(entry)
             continue
-        new = keep_unchanged(find, new)
+        new = match_dash_style(text, find, keep_unchanged(find, new))
         if new == find:
             bad.append(dict(entry, problems=["после сохранения исходного форматирования правка ничего не меняет"]))
             continue

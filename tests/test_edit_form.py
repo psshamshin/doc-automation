@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 from pipeline import docs as DOCS
-from pipeline.agent.verify import fit_table, keep_unchanged, locate
+from pipeline.agent.verify import fit_table, keep_unchanged, locate, match_dash_style
 
 PAGE = "# Раздел\n\n- Пункт один — первый; \n- Пункт два — второй.\n\nКонец."
 
@@ -28,6 +28,17 @@ class KeepUnchangedTest(unittest.TestCase):
 
     def test_changed_line_is_taken_from_the_answer(self):
         self.assertEqual(keep_unchanged("а\nб", "а\nв"), "а\nв")
+
+
+class DashStyleTest(unittest.TestCase):
+    PAGE = '- "А" \u2014 раздел а\n- "Б" \u2014 раздел б\n- "В" \u2014 раздел в\n'
+
+    def test_new_line_follows_the_dash_of_the_page(self):
+        self.assertEqual(match_dash_style(self.PAGE, '- "А" \u2014 раздел а', '- "А" \u2014 раздел а\n- "Г" - раздел г'),
+                         '- "А" \u2014 раздел а\n- "Г" \u2014 раздел г')
+
+    def test_page_without_such_dashes_is_left_alone(self):
+        self.assertEqual(match_dash_style("текст", "а", '- "Г" - раздел'), '- "Г" - раздел')
 
 
 class TableTest(unittest.TestCase):
