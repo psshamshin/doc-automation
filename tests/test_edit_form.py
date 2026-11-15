@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 from pipeline import docs as DOCS
-from pipeline.agent.verify import keep_unchanged, locate, table_width_problem
+from pipeline.agent.verify import fit_table, keep_unchanged, locate
 
 PAGE = "# Раздел\n\n- Пункт один — первый; \n- Пункт два — второй.\n\nКонец."
 
@@ -31,14 +31,23 @@ class KeepUnchangedTest(unittest.TestCase):
 
 
 class TableTest(unittest.TestCase):
-    FIND = "+-----+-----+\n| a   | b   |\n+-----+-----+"
+    FIND = "+------+------+\n| a    | b    |\n+------+------+"
 
-    def test_same_width_is_fine_and_other_is_rejected(self):
-        self.assertIsNone(table_width_problem(self.FIND, "+-----+-----+\n| aa  | b   |\n+-----+-----+"))
-        self.assertIn("другой ширины", table_width_problem(self.FIND, "+-----+-----+\n| aaaa  | b   |\n+-----+-----+"))
+    def test_row_is_fitted_to_the_frame(self):
+        new, problem = fit_table(self.FIND, "+------+------+\n| a    | bbb |\n+------+------+")
+        self.assertIsNone(problem)
+        self.assertEqual(new.split("\n")[1], "| a    | bbb  |")
+
+    def test_text_that_does_not_fit_is_rejected(self):
+        _, problem = fit_table(self.FIND, "+------+------+\n| a    | bbbbbbbbb |\n+------+------+")
+        self.assertIn("не помещается", problem)
+
+    def test_shifted_column_is_rejected(self):
+        _, problem = fit_table(self.FIND, "+------+------+\n| aaaaaa| b    |\n+------+------+")
+        self.assertIn("колонки", problem)
 
     def test_text_without_table_is_not_checked(self):
-        self.assertIsNone(table_width_problem("просто текст", "другой текст"))
+        self.assertEqual(fit_table("просто текст", "другой текст"), ("другой текст", None))
 
 
 class VariablesTest(unittest.TestCase):

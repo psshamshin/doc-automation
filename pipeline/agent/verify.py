@@ -12,7 +12,7 @@ import json
 import posixpath
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .. import docs as DOCS
 from .. import product as P
@@ -127,15 +127,36 @@ def keep_unchanged(find: str, new: str) -> str:
     return "\n".join(out)
 
 
-def table_width_problem(find: str, new: str) -> Optional[str]:
-    """Правка таблицы с рамкой: все строки таблицы одной ширины, иначе таблица перестанет собираться."""
-    rows = lambda t: [l.rstrip() for l in t.split("\n") if l.lstrip().startswith(("|", "+"))]
-    widths = {len(l) for l in rows(find)}
+def fit_table(find: str, new: str) -> Tuple[str, Optional[str]]:
+    """Правка таблицы с рамкой: строки подгоняются под ширину рамки, а если не помещаются или колонки сдвинуты, правка отклоняется.
+
+    Возвращает (текст, причина отказа). Подгонка - только пробелы перед последней вертикальной чертой.
+    """
+    is_row = lambda l: l.lstrip().startswith(("|", "+"))
+    rows = [l.rstrip() for l in find.split("\n") if is_row(l)]
+    widths = {len(l) for l in rows}
     if len(widths) != 1:
-        return None
+        return new, None
     w = widths.pop()
-    wrong = [l for l in rows(new) if len(l) != w]
-    return f"строка таблицы другой ширины ({len(wrong[0])} вместо {w}): выровняй пробелами по рамке" if wrong else None
+    joints = {i for l in rows if l.startswith("+") for i, c in enumerate(l) if c == "+"}
+    out = []
+    for line in new.split("\n"):
+        cut = line.rstrip()
+        if cut.startswith("|") and cut.endswith("|") and len(cut) != w:
+            body = cut[:-1].rstrip()
+            if len(body) <= w - 1:
+                line = body + " " * (w - 1 - len(body)) + "|"
+        out.append(line)
+    fixed = "\n".join(out)
+    for line in fixed.split("\n"):
+        if not is_row(line):
+            continue
+        cut = line.rstrip()
+        if len(cut) != w:
+            return fixed, f"строка таблицы не помещается в рамку ({len(cut)} вместо {w}): сократи текст в ячейке"
+        if cut.startswith("|") and joints and any(i not in joints for i, c in enumerate(cut) if c == "|"):
+            return fixed, "колонки таблицы сдвинуты: вертикальные черты должны стоять под границами колонок"
+    return fixed, None
 
 
 # ---------------------------------------------------------------- документация в памяти
@@ -307,7 +328,7 @@ def verify_answer(ds, u: Dict[str, Any], kind: str, answer: Dict[str, Any], docs
                 probs.append("метки скриншотов не ставятся: скриншоты к проверке определяет код")
             if "<!--" in new and "<!--" not in find:
                 probs.append("в новом тексте комментарий: вопросы и пояснения пишутся в ответе, а не в документации")
-            wide = table_width_problem(find, new)
+            new, wide = fit_table(find, new)
             if wide:
                 probs.append(wide)
             if kind == "checks" and BRAND_RE.search(find) and not BRAND_RE.search(new):
