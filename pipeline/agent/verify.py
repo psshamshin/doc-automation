@@ -376,6 +376,20 @@ def verify_answer(ds, u: Dict[str, Any], kind: str, answer: Dict[str, Any], docs
             "decision_problems": decision_problems}
 
 
+def rename_pairs(find: str, new: str) -> List[tuple]:
+    """Названия в кавычках, которые правка заменила похожими: («Картотека», «Картотека и списки»). Удаленные без пары не входят."""
+    terms = lambda t: {_norm(next(x for x in m if x)) for m in QUOTED_RE.findall(t)}
+    old, fresh = terms(find), terms(new)
+    gone, added = old - fresh, fresh - old
+    out = []
+    for g in sorted(gone):
+        best = max(sorted(added), key=lambda a: difflib.SequenceMatcher(None, g.lower(), a.lower()).ratio(), default=None)
+        if best and (g.lower() in best.lower() or best.lower() in g.lower()
+                     or difflib.SequenceMatcher(None, g.lower(), best.lower()).ratio() >= 0.6):
+            out.append((g, best))
+    return out
+
+
 def apply_ops(ds, docs: Docs, uid: str, verified: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Вносит проверенные правки в result/ и записывает их в trace.md."""
     for f, text in verified["staged"].items():

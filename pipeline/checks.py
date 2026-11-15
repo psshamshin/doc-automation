@@ -117,9 +117,14 @@ def check_tree(root: Path, image_root: Path, lang: str) -> Dict[str, List[Dict[s
                     continue
                 dest = page
                 if path:
-                    if not path.endswith(".md"):
-                        continue                      # ссылка на собранный сайт или файл не из исходников
-                    dest = _norm(str(Path(page).parent / path))
+                    if path.endswith(".md"):
+                        dest = _norm(str(Path(page).parent / path))
+                    elif "." in Path(path).name or path.endswith("/"):
+                        continue                      # файл не из исходников или раздел сайта
+                    else:
+                        # ссылка в формате собранного сайта: страница a/b.md открывается как a/b/, путь считается от нее
+                        site = _norm(str(Path(page).with_suffix("") / path))
+                        dest = site + ".md" if site + ".md" in pages else site + "/index.md"
                     if dest not in pages:
                         links.append({"lang": lang, "file": page, "line": n, "target": target, "why": "страницы нет"})
                         continue
@@ -277,21 +282,49 @@ FIXABLE = ("links", "brands", "images_missing", "parity")
 MAX_FIXES = 40
 
 
-def findings_to_fix(res: Dict[str, Any], touched: Set[str]) -> List[Dict[str, Any]]:
-    """Находки, которые исправляются правкой текста: появились в этом релизе или лежат на страницах, которые правил пайплайн.
+def findings_to_fix(res: Dict[str, Any], touched: Set[str], renames: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
+    """Находки, которые исправляются правкой текста.
 
-    Остальное было в документации и до релиза: массовую правку чужих страниц пайплайн не начинает. Отсутствие страницы
-    в одном из языков и картинки без ссылок правкой текста не исправляются. Не более MAX_FIXES, сначала новые.
+    Битые ссылки - всегда: это ошибка независимо от того, когда она появилась. Остальные проверки - если находка появилась
+    в этом релизе или лежит на странице, которую правил пайплайн: массовую правку чужих страниц пайплайн не начинает.
+    Переименования (renames) - упоминания старого названия на других страницах после принятой правки. Отсутствие страницы
+    в одном из языков и картинки без ссылок правкой текста не исправляются. Не более MAX_FIXES, сначала ссылки и новое.
     """
     out = []
     for k in FIXABLE:
         for x in res.get(k, {}).get("items", []):
             if x["target"] == "страница":
                 continue
-            if x["new"] or x["file"] in touched:
+            if k == "links" or x["new"] or x["file"] in touched:
                 out.append(dict(x, check=k))
-    out.sort(key=lambda x: (not x["new"], x["check"], x["file"], x["line"]))
+    out += [dict(x, check="rename") for x in renames or []]
+    order = {"links": 0, "rename": 1}
+    out.sort(key=lambda x: (order.get(x["check"], 2), not x["new"], x["check"], x["file"], x["line"]))
     return out[:MAX_FIXES]
+
+
+CELL_RE = r"^\|(?:[^|]*\|)*?\s*{t}\s*\|"
+
+
+def rename_findings(ds, renames: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Где еще упоминается название, которое принятая правка заменила: в кавычках или целой ячейкой таблицы."""
+    out: List[Dict[str, Any]] = []
+    seen = set()
+    for r in renames:
+        lang = r["lang"]
+        root = DOCS.workspace_root(ds.result_dir, lang)
+        pages = _pages(root)
+        q = "[" + re.escape("«»\"“”") + "]"
+        rx = re.compile(q + re.escape(r["old"]) + q + "|" + CELL_RE.format(t=re.escape(r["old"])))
+        for page, lines in pages.items():
+            if P.RELEASE_NOTES_DIR in page.split("/"):
+                continue
+            for n, line in enumerate(lines, 1):
+                if rx.search(line) and (lang, page, n) not in seen:
+                    seen.add((lang, page, n))
+                    out.append({"lang": lang, "file": page, "line": n, "target": r["old"], "new": True,
+                                "why": f"в правке задачи {r['unit']} «{r['old']}» заменено на «{r['new']}»: {line.strip()[:120]}"})
+    return out
 
 
 def run_checks(ds) -> Dict[str, Any]:

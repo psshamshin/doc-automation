@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 from pipeline import docs as DOCS
-from pipeline.agent.verify import fit_table, keep_unchanged, locate, match_dash_style
+from pipeline.agent.verify import rename_pairs, fit_table, keep_unchanged, locate, match_dash_style
 
 PAGE = "# Раздел\n\n- Пункт один — первый; \n- Пункт два — второй.\n\nКонец."
 
@@ -39,6 +39,13 @@ class DashStyleTest(unittest.TestCase):
 
     def test_page_without_such_dashes_is_left_alone(self):
         self.assertEqual(match_dash_style("текст", "а", '- "Г" - раздел'), '- "Г" - раздел')
+
+
+class RenamePairsTest(unittest.TestCase):
+    def test_similar_names_are_paired_and_deleted_ones_are_not(self):
+        find = 'Разделы: "Картотека", "Списки", "Источники событий".'
+        new = 'Разделы: "Картотека и списки", "Источники".'
+        self.assertEqual(rename_pairs(find, new), [("Источники событий", "Источники"), ("Картотека", "Картотека и списки")])
 
 
 class TableTest(unittest.TestCase):

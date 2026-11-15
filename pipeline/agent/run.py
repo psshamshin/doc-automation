@@ -26,7 +26,7 @@ from .. import validation as V
 from ..common import ROOT, load_json, log, read_text, save_json, save_text
 from .tasks import (CHECKS_ID, PROMPTS, checks_unit, STALE_ID, agent_cmd, build_queue, render_task, stale_unit, unit_dir, unit_pages, unit_sources,
                     workspace, index_of)
-from .verify import Docs, apply_ops, check_answer, verify_answer, verify_rn
+from .verify import Docs, apply_ops, check_answer, rename_pairs, verify_answer, verify_rn
 
 CMD_TRIES = 3                      # запусков команды агента на одно задание при сбое запуска
 
@@ -150,7 +150,7 @@ def run(ds, units: List[Dict[str, Any]], conf: Dict[str, Any], decisions: Dict[s
         if rec["kind"] != "release_notes" and path.is_file() and old.get("answer_sha") == _digest(path) \
                 and old.get("status") in ("done", "unknown", "dropped", "partial") and not redo:
             rec.update({k: old[k] for k in ("status", "note", "problems", "applied", "decision", "steps", "questions",
-                                            "summary", "approx", "seconds") if k in old})
+                                            "summary", "approx", "seconds", "renames") if k in old})
             rec["answer_sha"] = old["answer_sha"]
             return
         if rec["kind"] == "write_doc" and not unit_pages(ds, by_id[rec["unit"]]):
@@ -176,7 +176,9 @@ def run(ds, units: List[Dict[str, Any]], conf: Dict[str, Any], decisions: Dict[s
             return
         v = verify_answer(ds, by_id[rec["unit"]], rec["kind"], a, docs, conf, rec["id"])
         ops = apply_ops(ds, docs, rec["unit"], v) if v["ops"] else []
-        rec.update(applied=[{"file": o["file"], "what": o["what"]} for o in ops], approx=v["approx"], notes=v["notes"][:10])
+        rec.update(applied=[{"file": o["file"], "what": o["what"]} for o in ops], approx=v["approx"], notes=v["notes"][:10],
+                   renames=[{"unit": rec["unit"], "lang": re.sub(r"^docs/MD_(\w+)/.*$", r"\1", o["file"]), "old": a, "new": b}
+                            for o in ops for a, b in rename_pairs(o["find"], o["replace"])])
         if rec["kind"] == "decide" and not v["decision_problems"] and a["status"] == "done":
             rec["decision"] = a.get("decision")
         if v["problems"]:
@@ -229,7 +231,8 @@ def run(ds, units: List[Dict[str, Any]], conf: Dict[str, Any], decisions: Dict[s
     # --- проверки документации после всех правок: исправляется то, что появилось в этом релизе или лежит на правленных страницах
     touched = {re.sub(r"^docs/MD_\w+/docs/", "", a["file"]) for r in recs for a in r["applied"] if a["file"].startswith("docs/")}
     if not pending_decide and any(r["kind"] in ("write_doc", "stale") for r in recs):
-        fixes = CHK.findings_to_fix(CHK.run_checks(ds), touched)
+        renames = [x for r in recs if r["kind"] != "checks" for x in r.get("renames", [])]
+        fixes = CHK.findings_to_fix(CHK.run_checks(ds), touched, CHK.rename_findings(ds, renames))
         cu = checks_unit(fixes)
         if cu:
             by_id[CHECKS_ID] = cu
