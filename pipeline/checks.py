@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import difflib
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
@@ -282,7 +283,8 @@ FIXABLE = ("links", "brands", "images_missing", "parity")
 MAX_FIXES = 40
 
 
-def findings_to_fix(res: Dict[str, Any], touched: Set[str], renames: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
+def findings_to_fix(res: Dict[str, Any], touched: Set[str], renames: Optional[List[Dict[str, Any]]] = None,
+                    ui_names: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
     """Находки, которые исправляются правкой текста.
 
     Битые ссылки - всегда: это ошибка независимо от того, когда она появилась. Остальные проверки - если находка появилась
@@ -298,9 +300,55 @@ def findings_to_fix(res: Dict[str, Any], touched: Set[str], renames: Optional[Li
             if k == "links" or x["new"] or x["file"] in touched:
                 out.append(dict(x, check=k))
     out += [dict(x, check="rename") for x in renames or []]
-    order = {"links": 0, "rename": 1}
+    out += [dict(x, check="ui_name") for x in ui_names or []]
+    order = {"links": 0, "rename": 1, "ui_name": 2}
     out.sort(key=lambda x: (order.get(x["check"], 2), not x["new"], x["check"], x["file"], x["line"]))
     return out[:MAX_FIXES]
+
+
+UI_QUOTED_RE = re.compile(r"«([^»\n]{3,60})»|\"([^\"\n]{3,60})\"|“([^”\n]{3,60})”")
+CODE_LIKE_RE = re.compile(r"\{\{|[/\\_]|\.\w|\d{2,}|^[^A-Za-zА-Яа-яЁё]*$")
+
+
+def _inflection(a: str, b: str) -> bool:
+    """Та же фраза в другой форме слова («Типа совпадения» и «Тип совпадения»): не устаревшее название."""
+    wa, wb = a.lower().split(), b.lower().split()
+    if len(wa) != len(wb):
+        return False
+    for x, y in zip(wa, wb):
+        common = len(next((x[:i] for i in range(min(len(x), len(y)), 0, -1) if x[:i] == y[:i]), ""))
+        if common < max(3, min(len(x), len(y)) - 3):
+            return False
+    return True
+
+
+def outdated_names(ds, pages: Set[str], vocab: Dict[str, Set[str]]) -> List[Dict[str, Any]]:
+    """Названия в кавычках на страницах релиза, которых нет в интерфейсе новой версии, но есть похожие.
+
+    Ловит документацию, устаревшую еще до релиза. Страницы - те, что правились или относятся к задачам релиза, и
+    подключаемые ими файлы. Без похожего названия в интерфейсе и для другой формы того же слова находки нет.
+    """
+    out: List[Dict[str, Any]] = []
+    for lang in ds.langs:
+        allp = _pages(DOCS.workspace_root(ds.result_dir, lang))
+        scope = {p for p in pages if p in allp}
+        scope |= {_norm(str(Path(p).parent / inc)) for p in list(scope) for l in allp[p] for inc in INCLUDE_RE.findall(l)}
+        words = sorted(vocab.get(lang, set()))
+        low = {v.lower() for v in words}
+        seen = set()
+        for page in sorted(scope & set(allp)):
+            for n, line in enumerate(allp[page], 1):
+                for m in UI_QUOTED_RE.finditer(line):
+                    term = " ".join(next(x for x in m.groups() if x).split())
+                    if term.lower() in low or CODE_LIKE_RE.search(term) or (page, term) in seen:
+                        continue
+                    near = difflib.get_close_matches(term, words, n=3, cutoff=0.6)
+                    if not near or _inflection(term, near[0]):
+                        continue
+                    seen.add((page, term))
+                    out.append({"lang": lang, "file": page, "line": n, "target": term, "new": False,
+                                "why": "в интерфейсе новой версии такого названия нет; похожие: " + ", ".join(f"«{x}»" for x in near)})
+    return out
 
 
 CELL_RE = r"^\|(?:[^|]*\|)*?\s*{t}\s*\|"
