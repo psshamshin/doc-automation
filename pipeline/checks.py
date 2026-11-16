@@ -280,7 +280,7 @@ def _key(x: Dict[str, Any]) -> tuple:
 
 
 FIXABLE = ("links", "brands", "images_missing", "parity")
-MAX_FIXES = 40
+MAX_FIXES = 60
 
 
 def findings_to_fix(res: Dict[str, Any], touched: Set[str], renames: Optional[List[Dict[str, Any]]] = None,
@@ -317,6 +317,8 @@ def _inflection(a: str, b: str) -> bool:
     if len(wa) != len(wb):
         return False
     for x, y in zip(wa, wb):
+        if x == y:
+            continue
         common = len(next((x[:i] for i in range(min(len(x), len(y)), 0, -1) if x[:i] == y[:i]), ""))
         if common < max(3, min(len(x), len(y)) - 3):
             return False

@@ -182,5 +182,24 @@ class RenameFindingsTest(unittest.TestCase):
         self.assertEqual(sorted((x["file"], x["line"]) for x in found), [("user-manual/050_Work.md", 1), ("user-manual/110_Card.md", 1)])
 
 
+
+class OutdatedNamesTest(unittest.TestCase):
+    def test_name_missing_from_the_interface_with_a_similar_one_is_found(self):
+        from types import SimpleNamespace
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, True)
+        tree(root / "MD_eng" / "docs", {
+            "user-manual/160_Video.md": 'Select "Abondoned object". Field "Type of match". Value "alarm". {% include "../includes/010_T.md" %}\n',
+            "includes/010_T.md": 'Click "Save face to database".\n',
+            "user-manual/170_Other.md": 'Select "Abondoned object".\n',
+        })
+        vocab = {"eng": {"Abandoned object", "Type of matches", "Save face in database", "Platform"}}
+        ds = SimpleNamespace(result_dir=root, langs=["eng"])
+        found = CHK.outdated_names(ds, {"user-manual/160_Video.md"}, vocab)
+        self.assertEqual(sorted((x["file"], x["target"]) for x in found),
+                         [("includes/010_T.md", "Save face to database"), ("user-manual/160_Video.md", "Abondoned object")])
+        # "Type of match" - другая форма того же слова, "alarm" - похожего названия нет, 170_Other - не страница релиза
+
+
 if __name__ == "__main__":
     unittest.main()
