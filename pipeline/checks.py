@@ -306,6 +306,7 @@ def findings_to_fix(res: Dict[str, Any], touched: Set[str], renames: Optional[Li
     return out[:MAX_FIXES]
 
 
+UI_NEAR = 0.75                   # насколько похожим должно быть название в интерфейсе, чтобы считать его возможной заменой
 UI_QUOTED_RE = re.compile(r"«([^»\n]{3,60})»|\"([^\"\n]{3,60})\"|“([^”\n]{3,60})”")
 CODE_LIKE_RE = re.compile(r"\{\{|[/\\_]|\.\w|\d{2,}|^[^A-Za-zА-Яа-яЁё]*$")
 
@@ -342,7 +343,7 @@ def outdated_names(ds, pages: Set[str], vocab: Dict[str, Set[str]]) -> List[Dict
                     term = " ".join(next(x for x in m.groups() if x).split())
                     if term.lower() in low or CODE_LIKE_RE.search(term) or (page, term) in seen:
                         continue
-                    near = difflib.get_close_matches(term, words, n=3, cutoff=0.6)
+                    near = difflib.get_close_matches(term, words, n=3, cutoff=UI_NEAR)
                     if not near or _inflection(term, near[0]):
                         continue
                     seen.add((page, term))
