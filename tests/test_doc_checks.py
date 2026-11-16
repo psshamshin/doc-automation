@@ -30,6 +30,7 @@ class CheckTreeTest(unittest.TestCase):
             "index.md": "# Продукт\n\n[Заказы](./user-manual/100_Orders.md)\n[Нет](./user-manual/999_None.md)\n"
                         "[Якорь](./user-manual/100_Orders.md#filters)\n[Нет якоря](./user-manual/100_Orders.md#nothing)\n"
                         "[Сайт](https://example.org/x.md)\n",
+            "user-manual/200_Site.md": "[Есть](../100_Orders#filters)\n[Нет](../050_Old#x)\n[Файл](../file.pdf)\n",
             "user-manual/100_Orders.md": "# Заказы\n\n## Фильтры {#filters}\n\n![Экран](../Imgs/image1.png)\n"
                                          "![Нет](../Imgs/image9.png)\n\n{% include \"../includes/010_Table.md\" %}\n"
                                          "{% include \"../includes/999_None.md\" %}\n\nСервис LUNA работает.\n"
@@ -49,6 +50,7 @@ class CheckTreeTest(unittest.TestCase):
             ("index.md", "./user-manual/100_Orders.md#nothing", "раздела с таким якорем нет"),
             ("index.md", "./user-manual/999_None.md", "страницы нет"),
             ("user-manual/100_Orders.md", "../includes/999_None.md", "подключаемого файла нет"),
+            ("user-manual/200_Site.md", "../050_Old#x", "страницы нет"),          # ссылка в формате сайта, без .md
         ])
 
     def test_product_names_as_plain_text(self):
@@ -164,6 +166,20 @@ class EndToEndTest(unittest.TestCase):
         self.assertIn("| Битые ссылки | 2 | 1 | 0 |", checks)
         self.assertIn("| rus | `user-manual/100_Orders.md`:9 | `./000_None.md` | страницы нет | да |", checks)
         self.assertIn("| Названия продуктов текстом | 1 | 1 | 0 |", checks)
+
+
+
+class RenameFindingsTest(unittest.TestCase):
+    def test_old_name_is_found_in_quotes_and_as_a_table_cell(self):
+        from types import SimpleNamespace
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, True)
+        tree(root / "MD_rus" / "docs", {
+            "user-manual/050_Work.md": "| Роль | Картотека  | - просмотр |\n| Роль | Картотека лиц | - другое |\n",
+            "user-manual/110_Card.md": "Откройте раздел «Картотека».\nКартотека без кавычек.\n",
+        })
+        found = CHK.rename_findings(SimpleNamespace(result_dir=root), [{"unit": "GUI-1", "lang": "rus", "old": "Картотека", "new": "Картотека и списки"}])
+        self.assertEqual(sorted((x["file"], x["line"]) for x in found), [("user-manual/050_Work.md", 1), ("user-manual/110_Card.md", 1)])
 
 
 if __name__ == "__main__":

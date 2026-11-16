@@ -56,6 +56,10 @@ if kind == "write_doc" and mode != "unknown":
         other = Path("docs/MD_rus/docs/index.md")
         other.write_text(other.read_text(encoding="utf-8") + "\nПрямая правка.\n", encoding="utf-8")
     data["edits"] = [{"file": page, "find": find, "replace": new, "what": "добавлена строка", "evidence": ev}]
+    en = page.replace("/MD_rus/", "/MD_eng/")
+    if "/MD_rus/" in page and Path(en).is_file() and mode in ("ok", "direct", "no_steps", "foreign_step"):      # Ж1: те же правки на английской странице
+        en_first = Path(en).read_text(encoding="utf-8").splitlines()[0]
+        data["edits"].append({"file": en, "find": en_first, "replace": en_first + f"\n\nStub edit {item}.", "what": "added a line", "evidence": ev})
 if kind == "release_notes":
     tasks = re.findall(r"^### (\S+) \((.*)\)$", prompt, flags=re.M)
     lines = []
