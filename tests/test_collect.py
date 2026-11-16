@@ -109,6 +109,13 @@ class ReferenceGuardTest(Workdir):
             self.cli("agent", "--cmd", STUB, "--redo")
 
 
+    def test_reference_is_also_looked_for_next_to_the_project(self):
+        from pipeline.layout import Dataset
+        ds = Dataset(str(self.data), out=str(self.out))
+        self.assertIn(ds.base.parent / P.REFERENCE_DIR, ds.reference_candidates())
+        self.assertIn(ds.base / P.REFERENCE_DIR, ds.reference_candidates())
+
+
 class CompareViewTest(unittest.TestCase):
     def test_three_columns(self):
         fr = CV.file_rows("заголовок\nстарая строка\nудалят оба\nконец\n", "заголовок\nновая строка\nконец\nдобавил пайплайн\n",

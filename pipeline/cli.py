@@ -140,7 +140,7 @@ def cmd_compare(ds: Dataset, args) -> None:
     if args.reference or not ds.has(P.SLOT_DOCS_REFERENCE):
         if not ds.use_reference(args.reference):
             raise DatasetError("сравнивать не с чем: документации нового релиза от техписа нет ни во входных данных, "
-                               f"ни в папке {P.REFERENCE_DIR}/. Укажите ее: compare --reference <папка>")
+                               "ни в папках: " + ", ".join(str(d) for d in ds.reference_candidates()) + ". Укажите ее: compare --reference <папка>")
     RUN.step_reference(ds)
     RUN.step_compare(ds)
 
