@@ -334,15 +334,24 @@ def _release_scope(allp: Dict[str, List[str]], pages: Set[str]) -> Set[str]:
     return scope & set(allp)
 
 
-def _package_code(root: Path, i18n_file: str, changed: Set[str], limit: int) -> List[str]:
-    """Файлы кода, которые показывают тексты из этого файла переводов: тот же пакет, сначала измененные в релизе."""
+def _package_code(root: Path, old_root: Path, i18n_file: str, term: str, changed: Set[str], limit: int) -> List[str]:
+    """Файлы кода, которые показывают тексты из этого файла переводов: тот же пакет.
+
+    Порядок: сначала файлы, в коде прошлой версии которых больше слов названия (в ключах перевода бывают сами тексты),
+    затем измененные в релизе.
+    """
+    stems = {w.lower()[:5] for w in re.findall(r"\w{4,}", term)}
+
+    def score(f: str) -> int:
+        text = ((read_text(old_root / f) or "") + (read_text(root / f) or "")).lower()
+        return sum(1 for s in stems if s in text)
     d = Path(i18n_file).parent
     while d.name in ("i18n", "locales", "translations") and d.parent != d:
         d = d.parent
     files = sorted(str(p.relative_to(root)) for p in (root / d).rglob("*") if p.is_file()
                    and p.suffix in (".js", ".jsx", ".ts", ".tsx") and "i18n" not in p.parts and ".test." not in p.name
                    and ".point3." not in p.name and "node_modules" not in p.parts) if (root / d).is_dir() else []
-    files.sort(key=lambda f: (f not in changed, f))
+    files.sort(key=lambda f: (-score(f), f not in changed, f))
     return ([i18n_file] if (root / i18n_file).is_file() else []) + files[:limit]
 
 
@@ -386,7 +395,7 @@ def dead_names(ds, pages: Set[str], vocab: Dict[str, Set[str]]) -> List[Dict[str
         if any(f"{k['file']}::{k['key']}" in used for k in ks) or (lang, page, term) in seen:
             continue
         seen.add((lang, page, term))
-        code = sorted({c for k in ks for c in _package_code(new_root, k["file"], changed, DEAD_CODE_FILES)})
+        code = list(dict.fromkeys(c for k in ks for c in _package_code(new_root, ds.slot(P.SLOT_CODE_OLD), k["file"], term, changed, DEAD_CODE_FILES)))
         out.append({"lang": lang, "file": page, "line": n, "target": term, "new": False, "code": code,
                     "why": "ключ этого текста не используется в коде прошлой версии: на экране его не было и до релиза; "
                            "что выводится на этом месте, смотри в коде: " + ", ".join(f"`code/{c}`" for c in code[:4])})
