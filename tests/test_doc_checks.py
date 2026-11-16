@@ -182,5 +182,50 @@ class RenameFindingsTest(unittest.TestCase):
         self.assertEqual(sorted((x["file"], x["line"]) for x in found), [("user-manual/050_Work.md", 1), ("user-manual/110_Card.md", 1)])
 
 
+
+class OutdatedNamesTest(unittest.TestCase):
+    def test_name_missing_from_the_interface_with_a_similar_one_is_found(self):
+        from types import SimpleNamespace
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, True)
+        tree(root / "MD_eng" / "docs", {
+            "user-manual/160_Video.md": 'Select "Abondoned object". Field "Type of match". Value "alarm". {% include "../includes/010_T.md" %}\n',
+            "includes/010_T.md": 'Click "Save face to database".\n',
+            "user-manual/170_Other.md": 'Select "Abondoned object".\n',
+        })
+        vocab = {"eng": {"Abandoned object", "Type of matches", "Save face in database", "Platform"}}
+        ds = SimpleNamespace(result_dir=root, langs=["eng"])
+        found = CHK.outdated_names(ds, {"user-manual/160_Video.md"}, vocab)
+        self.assertEqual(sorted((x["file"], x["target"]) for x in found),
+                         [("includes/010_T.md", "Save face to database"), ("user-manual/160_Video.md", "Abondoned object")])
+        # "Type of match" - другая форма того же слова, "alarm" - похожего названия нет, 170_Other - не страница релиза
+
+
+
+class DeadNamesTest(unittest.TestCase):
+    def test_name_of_an_unused_key_is_found_with_the_package_code(self):
+        import json
+        from types import SimpleNamespace
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, True)
+        old, new, data = root / "old", root / "new", root / "data"
+        files = {"packages/pages/h/i18n/index.ts": "export const ru = { 'h.save if': 'Сохранять, если', 'h.title': 'Заголовок' };\n",
+                 "packages/pages/h/forms/Form.jsx": "t('h.title')\n"}
+        tree(old, files)
+        tree(new, {**files, "packages/pages/h/forms/Form.jsx": "t('h.conditions')\n"})
+        tree(data, {"03_i18n_rows.json": json.dumps({"old": [
+            {"locale": "ru", "file": "packages/pages/h/i18n/index.ts", "key": "h.save if", "value": "Сохранять, если"},
+            {"locale": "ru", "file": "packages/pages/h/i18n/index.ts", "key": "h.title", "value": "Заголовок"}], "new": []}),
+                    "02_code_diff.json": json.dumps({"files": [{"path": "packages/pages/h/forms/Form.jsx"}]})})
+        tree(root / "result" / "MD_rus" / "docs", {"user-manual/140_H.md": 'Опция "Сохранять, если" и "Заголовок".\n'})
+        rules = {"i18n": {"doc_lang_of_locale": {"ru": "rus"}, "file_globs": ["**/i18n/**"]}}
+        ds = SimpleNamespace(result_dir=root / "result", data_dir=data, langs=["rus"], rules=rules,
+                             slot=lambda name: old if name == P.SLOT_CODE_OLD else new)
+        found = CHK.dead_names(ds, {"user-manual/140_H.md"}, {"rus": set()})
+        self.assertEqual([(x["file"], x["target"]) for x in found], [("user-manual/140_H.md", "Сохранять, если")])  # «Заголовок» используется
+        self.assertIn("packages/pages/h/forms/Form.jsx", found[0]["code"])
+        self.assertEqual(found[0]["code"][0], "packages/pages/h/i18n/index.ts")
+
+
 if __name__ == "__main__":
     unittest.main()

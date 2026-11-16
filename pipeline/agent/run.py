@@ -26,7 +26,7 @@ from .. import validation as V
 from ..common import ROOT, load_json, log, read_text, save_json, save_text
 from .tasks import (CHECKS_ID, PROMPTS, checks_unit, STALE_ID, agent_cmd, build_queue, render_task, stale_unit, unit_dir, unit_pages, unit_sources,
                     workspace, index_of)
-from .verify import Docs, apply_ops, check_answer, rename_pairs, verify_answer, verify_rn
+from .verify import _ui_vocabulary, Docs, apply_ops, check_answer, rename_pairs, verify_answer, verify_rn
 
 CMD_TRIES = 3                      # запусков команды агента на одно задание при сбое запуска
 
@@ -232,7 +232,10 @@ def run(ds, units: List[Dict[str, Any]], conf: Dict[str, Any], decisions: Dict[s
     touched = {re.sub(r"^docs/MD_\w+/docs/", "", a["file"]) for r in recs for a in r["applied"] if a["file"].startswith("docs/")}
     if not pending_decide and any(r["kind"] in ("write_doc", "stale") for r in recs):
         renames = [x for r in recs if r["kind"] != "checks" for x in r.get("renames", [])]
-        fixes = CHK.findings_to_fix(CHK.run_checks(ds), touched, CHK.rename_findings(ds, renames))
+        release_pages = touched | {c["doc"] for u in units if final.get(u["id"], "skip") != "skip" for c in u["doc_candidates"]}
+        fixes = CHK.findings_to_fix(CHK.run_checks(ds), touched, CHK.rename_findings(ds, renames),
+                                    CHK.outdated_names(ds, release_pages, _ui_vocabulary(ds)),
+                                    CHK.dead_names(ds, release_pages, _ui_vocabulary(ds)))
         cu = checks_unit(fixes)
         if cu:
             by_id[CHECKS_ID] = cu

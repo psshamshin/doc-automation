@@ -14,13 +14,14 @@
 
 from __future__ import annotations
 
+import difflib
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 from . import docs as DOCS
 from . import product as P
-from .common import read_text
+from .common import load_json, read_text
 
 LINK_RE = re.compile(r"(!?)\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
 INCLUDE_RE = re.compile(r"""\{%\s*include\s+['"]([^'"]+)['"]""")
@@ -279,10 +280,11 @@ def _key(x: Dict[str, Any]) -> tuple:
 
 
 FIXABLE = ("links", "brands", "images_missing", "parity")
-MAX_FIXES = 40
+MAX_FIXES = 60
 
 
-def findings_to_fix(res: Dict[str, Any], touched: Set[str], renames: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
+def findings_to_fix(res: Dict[str, Any], touched: Set[str], renames: Optional[List[Dict[str, Any]]] = None,
+                    ui_names: Optional[List[Dict[str, Any]]] = None, dead: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
     """Находки, которые исправляются правкой текста.
 
     Битые ссылки - всегда: это ошибка независимо от того, когда она появилась. Остальные проверки - если находка появилась
@@ -298,9 +300,135 @@ def findings_to_fix(res: Dict[str, Any], touched: Set[str], renames: Optional[Li
             if k == "links" or x["new"] or x["file"] in touched:
                 out.append(dict(x, check=k))
     out += [dict(x, check="rename") for x in renames or []]
-    order = {"links": 0, "rename": 1}
+    taken = {(x["lang"], x["file"], x["line"], x["target"]) for x in dead or []}
+    out += [dict(x, check="dead_name") for x in dead or []]
+    out += [dict(x, check="ui_name") for x in ui_names or [] if (x["lang"], x["file"], x["line"], x["target"]) not in taken]
+    order = {"links": 0, "rename": 1, "dead_name": 2, "ui_name": 3}
     out.sort(key=lambda x: (order.get(x["check"], 2), not x["new"], x["check"], x["file"], x["line"]))
     return out[:MAX_FIXES]
+
+
+UI_NEAR = 0.75                   # насколько похожим должно быть название в интерфейсе, чтобы считать его возможной заменой
+UI_QUOTED_RE = re.compile(r"«([^»\n]{3,60})»|\"([^\"\n]{3,60})\"|“([^”\n]{3,60})”")
+CODE_LIKE_RE = re.compile(r"\{\{|[/\\_]|\.\w|\d{2,}|^[^A-Za-zА-Яа-яЁё]*$")
+
+
+def _inflection(a: str, b: str) -> bool:
+    """Та же фраза в другой форме слова («Типа совпадения» и «Тип совпадения»): не устаревшее название."""
+    wa, wb = a.lower().split(), b.lower().split()
+    if len(wa) != len(wb):
+        return False
+    for x, y in zip(wa, wb):
+        if x == y:
+            continue
+        common = len(next((x[:i] for i in range(min(len(x), len(y)), 0, -1) if x[:i] == y[:i]), ""))
+        if common < max(3, min(len(x), len(y)) - 3):
+            return False
+    return True
+
+
+def _release_scope(allp: Dict[str, List[str]], pages: Set[str]) -> Set[str]:
+    """Страницы релиза и подключаемые ими файлы."""
+    scope = {p for p in pages if p in allp}
+    scope |= {_norm(str(Path(p).parent / inc)) for p in list(scope) for l in allp[p] for inc in INCLUDE_RE.findall(l)}
+    return scope & set(allp)
+
+
+def _package_code(root: Path, old_root: Path, i18n_file: str, term: str, changed: Set[str], limit: int) -> List[str]:
+    """Файлы кода, которые показывают тексты из этого файла переводов: тот же пакет.
+
+    Порядок: сначала файлы, в коде прошлой версии которых больше слов названия (в ключах перевода бывают сами тексты),
+    затем измененные в релизе.
+    """
+    stems = {w.lower()[:5] for w in re.findall(r"\w{4,}", term)}
+
+    def score(f: str) -> int:
+        text = ((read_text(old_root / f) or "") + (read_text(root / f) or "")).lower()
+        return sum(1 for s in stems if s in text)
+    d = Path(i18n_file).parent
+    while d.name in ("i18n", "locales", "translations") and d.parent != d:
+        d = d.parent
+    files = sorted(str(p.relative_to(root)) for p in (root / d).rglob("*") if p.is_file()
+                   and p.suffix in (".js", ".jsx", ".ts", ".tsx") and "i18n" not in p.parts and ".test." not in p.name
+                   and ".point3." not in p.name and "node_modules" not in p.parts) if (root / d).is_dir() else []
+    files.sort(key=lambda f: (-score(f), f not in changed, f))
+    return ([i18n_file] if (root / i18n_file).is_file() else []) + files[:limit]
+
+
+DEAD_CODE_FILES = 60               # файлов кода пакета на один файл переводов: агент ищет в них по ключам, а не читает все
+
+
+def dead_names(ds, pages: Set[str], vocab: Dict[str, Set[str]]) -> List[Dict[str, Any]]:
+    """Названия в кавычках на страницах релиза, которые экран не показывал и в прошлой версии.
+
+    Признак: название совпадает с текстом ключа перевода прошлой версии, а ключ не используется в ее коде, и в интерфейсе
+    новой версии такого названия нет. К находке прикладываются файлы кода нового релиза из того же пакета: по ним видно,
+    что выводится на этом месте на самом деле.
+    """
+    from . import i18n_extract as I18N
+    rows = load_json(ds.data_dir / "03_i18n_rows.json")
+    lang_of = ds.rules["i18n"]["doc_lang_of_locale"]
+    keys: Dict[tuple, List[Dict[str, str]]] = {}
+    for r in rows["old"]:
+        lang = lang_of.get(r["locale"])
+        if lang and I18N.usage_ref(r["key"]):
+            keys.setdefault((lang, " ".join(r["value"].split())), []).append({"file": r["file"], "key": r["key"]})
+    found: List[tuple] = []
+    for lang in ds.langs:
+        allp = _pages(DOCS.workspace_root(ds.result_dir, lang))
+        low = {v.lower() for v in vocab.get(lang, set())}
+        for page in sorted(_release_scope(allp, pages)):
+            for n, line in enumerate(allp[page], 1):
+                for m in UI_QUOTED_RE.finditer(line):
+                    term = " ".join(next(x for x in m.groups() if x).split())
+                    if term.lower() not in low and (lang, term) in keys:
+                        found.append((lang, page, n, term))
+    if not found:
+        return []
+    wanted = [k for f in found for k in keys[(f[0], f[3])]]
+    used = I18N.key_usage(ds.slot(P.SLOT_CODE_OLD), wanted, ds.rules)
+    changed = {f["path"] for f in load_json(ds.data_dir / "02_code_diff.json")["files"]}
+    new_root = ds.slot(P.SLOT_CODE_NEW)
+    out, seen = [], set()
+    for lang, page, n, term in found:
+        ks = keys[(lang, term)]
+        if any(f"{k['file']}::{k['key']}" in used for k in ks) or (lang, page, term) in seen:
+            continue
+        seen.add((lang, page, term))
+        code = list(dict.fromkeys(c for k in ks for c in _package_code(new_root, ds.slot(P.SLOT_CODE_OLD), k["file"], term, changed, DEAD_CODE_FILES)))
+        out.append({"lang": lang, "file": page, "line": n, "target": term, "new": False, "code": code,
+                    "why": "ключ этого текста не используется в коде прошлой версии: на экране его не было и до релиза; "
+                           "что выводится на этом месте, ищи в коде пакета `code/" + str(Path(code[-1]).parent) + "/` (сначала: "
+                           + ", ".join(f"`{Path(c).name}`" for c in code[1:4]) + ")"})
+    return out
+
+
+def outdated_names(ds, pages: Set[str], vocab: Dict[str, Set[str]]) -> List[Dict[str, Any]]:
+    """Названия в кавычках на страницах релиза, которых нет в интерфейсе новой версии, но есть похожие.
+
+    Ловит документацию, устаревшую еще до релиза. Страницы - те, что правились или относятся к задачам релиза, и
+    подключаемые ими файлы. Без похожего названия в интерфейсе и для другой формы того же слова находки нет.
+    """
+    out: List[Dict[str, Any]] = []
+    for lang in ds.langs:
+        allp = _pages(DOCS.workspace_root(ds.result_dir, lang))
+        scope = _release_scope(allp, pages)
+        words = sorted(vocab.get(lang, set()))
+        low = {v.lower() for v in words}
+        seen = set()
+        for page in sorted(scope & set(allp)):
+            for n, line in enumerate(allp[page], 1):
+                for m in UI_QUOTED_RE.finditer(line):
+                    term = " ".join(next(x for x in m.groups() if x).split())
+                    if term.lower() in low or CODE_LIKE_RE.search(term) or (page, term) in seen:
+                        continue
+                    near = difflib.get_close_matches(term, words, n=3, cutoff=UI_NEAR)
+                    if not near or _inflection(term, near[0]):
+                        continue
+                    seen.add((page, term))
+                    out.append({"lang": lang, "file": page, "line": n, "target": term, "new": False,
+                                "why": "в интерфейсе новой версии такого названия нет; похожие: " + ", ".join(f"«{x}»" for x in near)})
+    return out
 
 
 CELL_RE = r"^\|(?:[^|]*\|)*?\s*{t}\s*\|"
