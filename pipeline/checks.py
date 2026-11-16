@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional, Set
 
 from . import docs as DOCS
 from . import product as P
-from .common import read_text
+from .common import load_json, read_text
 
 LINK_RE = re.compile(r"(!?)\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
 INCLUDE_RE = re.compile(r"""\{%\s*include\s+['"]([^'"]+)['"]""")
@@ -284,7 +284,7 @@ MAX_FIXES = 60
 
 
 def findings_to_fix(res: Dict[str, Any], touched: Set[str], renames: Optional[List[Dict[str, Any]]] = None,
-                    ui_names: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
+                    ui_names: Optional[List[Dict[str, Any]]] = None, dead: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
     """Находки, которые исправляются правкой текста.
 
     Битые ссылки - всегда: это ошибка независимо от того, когда она появилась. Остальные проверки - если находка появилась
@@ -300,8 +300,10 @@ def findings_to_fix(res: Dict[str, Any], touched: Set[str], renames: Optional[Li
             if k == "links" or x["new"] or x["file"] in touched:
                 out.append(dict(x, check=k))
     out += [dict(x, check="rename") for x in renames or []]
-    out += [dict(x, check="ui_name") for x in ui_names or []]
-    order = {"links": 0, "rename": 1, "ui_name": 2}
+    taken = {(x["lang"], x["file"], x["line"], x["target"]) for x in dead or []}
+    out += [dict(x, check="dead_name") for x in dead or []]
+    out += [dict(x, check="ui_name") for x in ui_names or [] if (x["lang"], x["file"], x["line"], x["target"]) not in taken]
+    order = {"links": 0, "rename": 1, "dead_name": 2, "ui_name": 3}
     out.sort(key=lambda x: (order.get(x["check"], 2), not x["new"], x["check"], x["file"], x["line"]))
     return out[:MAX_FIXES]
 
@@ -325,6 +327,72 @@ def _inflection(a: str, b: str) -> bool:
     return True
 
 
+def _release_scope(allp: Dict[str, List[str]], pages: Set[str]) -> Set[str]:
+    """Страницы релиза и подключаемые ими файлы."""
+    scope = {p for p in pages if p in allp}
+    scope |= {_norm(str(Path(p).parent / inc)) for p in list(scope) for l in allp[p] for inc in INCLUDE_RE.findall(l)}
+    return scope & set(allp)
+
+
+def _package_code(root: Path, i18n_file: str, changed: Set[str], limit: int) -> List[str]:
+    """Файлы кода, которые показывают тексты из этого файла переводов: тот же пакет, сначала измененные в релизе."""
+    d = Path(i18n_file).parent
+    while d.name in ("i18n", "locales", "translations") and d.parent != d:
+        d = d.parent
+    files = sorted(str(p.relative_to(root)) for p in (root / d).rglob("*") if p.is_file()
+                   and p.suffix in (".js", ".jsx", ".ts", ".tsx") and "i18n" not in p.parts and ".test." not in p.name
+                   and ".point3." not in p.name and "node_modules" not in p.parts) if (root / d).is_dir() else []
+    files.sort(key=lambda f: (f not in changed, f))
+    return ([i18n_file] if (root / i18n_file).is_file() else []) + files[:limit]
+
+
+DEAD_CODE_FILES = 8                # файлов кода на один файл переводов в находке о «мертвом» названии
+
+
+def dead_names(ds, pages: Set[str], vocab: Dict[str, Set[str]]) -> List[Dict[str, Any]]:
+    """Названия в кавычках на страницах релиза, которые экран не показывал и в прошлой версии.
+
+    Признак: название совпадает с текстом ключа перевода прошлой версии, а ключ не используется в ее коде, и в интерфейсе
+    новой версии такого названия нет. К находке прикладываются файлы кода нового релиза из того же пакета: по ним видно,
+    что выводится на этом месте на самом деле.
+    """
+    from . import i18n_extract as I18N
+    rows = load_json(ds.data_dir / "03_i18n_rows.json")
+    lang_of = ds.rules["i18n"]["doc_lang_of_locale"]
+    keys: Dict[tuple, List[Dict[str, str]]] = {}
+    for r in rows["old"]:
+        lang = lang_of.get(r["locale"])
+        if lang and I18N.usage_ref(r["key"]):
+            keys.setdefault((lang, " ".join(r["value"].split())), []).append({"file": r["file"], "key": r["key"]})
+    found: List[tuple] = []
+    for lang in ds.langs:
+        allp = _pages(DOCS.workspace_root(ds.result_dir, lang))
+        low = {v.lower() for v in vocab.get(lang, set())}
+        for page in sorted(_release_scope(allp, pages)):
+            for n, line in enumerate(allp[page], 1):
+                for m in UI_QUOTED_RE.finditer(line):
+                    term = " ".join(next(x for x in m.groups() if x).split())
+                    if term.lower() not in low and (lang, term) in keys:
+                        found.append((lang, page, n, term))
+    if not found:
+        return []
+    wanted = [k for f in found for k in keys[(f[0], f[3])]]
+    used = I18N.key_usage(ds.slot(P.SLOT_CODE_OLD), wanted, ds.rules)
+    changed = {f["path"] for f in load_json(ds.data_dir / "02_code_diff.json")["files"]}
+    new_root = ds.slot(P.SLOT_CODE_NEW)
+    out, seen = [], set()
+    for lang, page, n, term in found:
+        ks = keys[(lang, term)]
+        if any(f"{k['file']}::{k['key']}" in used for k in ks) or (lang, page, term) in seen:
+            continue
+        seen.add((lang, page, term))
+        code = sorted({c for k in ks for c in _package_code(new_root, k["file"], changed, DEAD_CODE_FILES)})
+        out.append({"lang": lang, "file": page, "line": n, "target": term, "new": False, "code": code,
+                    "why": "ключ этого текста не используется в коде прошлой версии: на экране его не было и до релиза; "
+                           "что выводится на этом месте, смотри в коде: " + ", ".join(f"`code/{c}`" for c in code[:4])})
+    return out
+
+
 def outdated_names(ds, pages: Set[str], vocab: Dict[str, Set[str]]) -> List[Dict[str, Any]]:
     """Названия в кавычках на страницах релиза, которых нет в интерфейсе новой версии, но есть похожие.
 
@@ -334,8 +402,7 @@ def outdated_names(ds, pages: Set[str], vocab: Dict[str, Set[str]]) -> List[Dict
     out: List[Dict[str, Any]] = []
     for lang in ds.langs:
         allp = _pages(DOCS.workspace_root(ds.result_dir, lang))
-        scope = {p for p in pages if p in allp}
-        scope |= {_norm(str(Path(p).parent / inc)) for p in list(scope) for l in allp[p] for inc in INCLUDE_RE.findall(l)}
+        scope = _release_scope(allp, pages)
         words = sorted(vocab.get(lang, set()))
         low = {v.lower() for v in words}
         seen = set()

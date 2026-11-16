@@ -101,7 +101,8 @@ def checks_unit(findings: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     if not findings:
         return None
     pages = sorted({x["file"] for x in findings})
-    return {"id": CHECKS_ID, "task": None, "_checks": findings, "entries": [], "files": [],
+    code = sorted({c for x in findings for c in x.get("code", [])})
+    return {"id": CHECKS_ID, "task": None, "_checks": findings, "_code": code, "entries": [], "files": [],
             "i18n": {"added": [], "removed": [], "changed": []}, "doc_candidates": [{"doc": p, "why": []} for p in pages], "jira": None}
 
 
@@ -165,8 +166,8 @@ def _mentions_languages(u: Dict[str, Any]) -> bool:
 
 def unit_sources(ds, u: Dict[str, Any]) -> Dict[str, Path]:
     """Источники задачи: путь в папке агента -> настоящий файл. Первой идет сводка, затем патчи."""
-    if u.get("_checks"):
-        return {}                                    # исходных данных нет: находки и страницы напечатаны в задании
+    if u.get("_checks"):                             # находки и страницы напечатаны в задании; код - только для «мертвых» названий
+        return {f"sources/{CHECKS_ID}/code/{c}": ds.slot(P.SLOT_CODE_NEW) / c for c in u.get("_code", [])}
     base = f"sources/{unit_dir(u['id'])}"
     digest = ds.data_dir / "agent_digest" / f"{unit_dir(u['id'])}.md"
     save_text(digest, build_digest(ds, u))           # всегда заново: привязка файлов к задаче могла измениться
@@ -215,7 +216,9 @@ def _sources_block(ds, u: Dict[str, Any]) -> List[str]:
             + [f"- `{p}`" for p in unit_pages(ds, u)] \
             + ["", "## Разрешенные источники", "",
                "Подтверждением служит дословная цитата со страницы из списка выше: строка с ошибкой и, если нужно, соседние "
-               "страницы или другой язык. В подтверждениях указывай путь страницы точно так, как он записан выше."]
+               "страницы или другой язык. В подтверждениях указывай путь страницы точно так, как он записан выше."] \
+            + ([f"- `sources/{CHECKS_ID}/code/...` - код новой версии для находок «названия не было на экране и до релиза»: "
+                + ", ".join(f"`sources/{CHECKS_ID}/code/{c}`" for c in u["_code"])] if u.get("_code") else [])
     L = ["", "## Страницы документации", "", "Правки можно предлагать только для этих страниц.", ""]
     L += [f"- `{p}`" for p in unit_pages(ds, u)] or ["Страниц нет."]
     L += ["", "## Разрешенные источники", "",
@@ -312,7 +315,8 @@ def _checks_context(ds, u: Dict[str, Any]) -> str:
          "появилось в этом релизе; остальное лежит на страницах, которые правились в этом релизе.", ""]
     names = {"links": "битая ссылка", "brands": "название продукта текстом", "images_missing": "нет файла картинки",
              "parity": "RU и EN расходятся", "rename": "название заменено в другой правке",
-             "ui_name": "названия нет в интерфейсе"}
+             "ui_name": "названия нет в интерфейсе",
+             "dead_name": "названия не было на экране и до релиза"}
     for x in fx:
         where = f"`docs/MD_{x['lang'].split('/')[0]}/docs/{x['file']}`" + (f":{x['line']}" if x["line"] else "")
         L.append(f"- [{names[x['check']]}] {where}: `{x['target']}` - {x['why']}" + (" (новое)" if x["new"] else ""))
@@ -325,6 +329,10 @@ def _checks_context(ds, u: Dict[str, Any]) -> str:
     if any(x["check"] == "brands" for x in fx):
         L += ["", "Переменные документации и их значения. Название продукта заменяется переменной, только если ее значение совпадает с заменяемым текстом слово в слово; иначе не правь:", ""]
         L += _variables_hint(ds)
+    if any(x["check"] == "dead_name" for x in fx):
+        L += ["", "Для «названия не было на экране и до релиза»: текст есть в переводах прошлой версии, но код его не выводил. Найди в "
+                  "приложенном коде новой версии, какой текст выводится на этом месте (ключ перевода в коде, его текст - в файле "
+                  "переводов из того же списка), и замени им. Подтверди цитатами из кода. Если по коду не видно, не правь."]
     if any(x["check"] == "ui_name" for x in fx):
         L += ["", "Для «названия нет в интерфейсе»: название в кавычках не найдено в текстах интерфейса новой версии (документация могла "
                   "устареть еще до релиза). Если это название элемента интерфейса и один из похожих - тот же элемент с текущим названием, "

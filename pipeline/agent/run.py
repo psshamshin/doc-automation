@@ -234,7 +234,8 @@ def run(ds, units: List[Dict[str, Any]], conf: Dict[str, Any], decisions: Dict[s
         renames = [x for r in recs if r["kind"] != "checks" for x in r.get("renames", [])]
         release_pages = touched | {c["doc"] for u in units if final.get(u["id"], "skip") != "skip" for c in u["doc_candidates"]}
         fixes = CHK.findings_to_fix(CHK.run_checks(ds), touched, CHK.rename_findings(ds, renames),
-                                    CHK.outdated_names(ds, release_pages, _ui_vocabulary(ds)))
+                                    CHK.outdated_names(ds, release_pages, _ui_vocabulary(ds)),
+                                    CHK.dead_names(ds, release_pages, _ui_vocabulary(ds)))
         cu = checks_unit(fixes)
         if cu:
             by_id[CHECKS_ID] = cu
