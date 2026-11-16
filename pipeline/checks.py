@@ -355,7 +355,7 @@ def _package_code(root: Path, old_root: Path, i18n_file: str, term: str, changed
     return ([i18n_file] if (root / i18n_file).is_file() else []) + files[:limit]
 
 
-DEAD_CODE_FILES = 8                # файлов кода на один файл переводов в находке о «мертвом» названии
+DEAD_CODE_FILES = 60               # файлов кода пакета на один файл переводов: агент ищет в них по ключам, а не читает все
 
 
 def dead_names(ds, pages: Set[str], vocab: Dict[str, Set[str]]) -> List[Dict[str, Any]]:
@@ -398,7 +398,8 @@ def dead_names(ds, pages: Set[str], vocab: Dict[str, Set[str]]) -> List[Dict[str
         code = list(dict.fromkeys(c for k in ks for c in _package_code(new_root, ds.slot(P.SLOT_CODE_OLD), k["file"], term, changed, DEAD_CODE_FILES)))
         out.append({"lang": lang, "file": page, "line": n, "target": term, "new": False, "code": code,
                     "why": "ключ этого текста не используется в коде прошлой версии: на экране его не было и до релиза; "
-                           "что выводится на этом месте, смотри в коде: " + ", ".join(f"`code/{c}`" for c in code[:4])})
+                           "что выводится на этом месте, ищи в коде пакета `code/" + str(Path(code[-1]).parent) + "/` (сначала: "
+                           + ", ".join(f"`{Path(c).name}`" for c in code[1:4]) + ")"})
     return out
 
 
