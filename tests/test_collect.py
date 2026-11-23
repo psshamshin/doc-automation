@@ -82,7 +82,7 @@ class CollectTest(Workdir):
         self.assertIn("user-manual/100_Orders.md", cmp_["rus"]["only_reference"])
         page = (self.out / P.OUT_COMPARE / "compare.html").read_text(encoding="utf-8")
         self.assertIn("user-manual/100_Orders.md", page)
-        self.assertIn("<th>Пайплайн", page)
+        self.assertIn("class=\"ph\">Пайплайн", page)
 
 
 class ReferenceGuardTest(Workdir):
