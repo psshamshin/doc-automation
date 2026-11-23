@@ -244,6 +244,36 @@ class RejectionTest(AgentCase):
         self.assertIn("и по дате.", self.result())
 
 
+class RedoTest(AgentCase):
+    def test_redo_starts_from_clean_docs_and_answers(self):
+        self.start("--cmd", STUB, **{"NOTASK:0.10.0#7": 1})
+        self.assertIn("Правка заглушки", self.result())
+        self.cli("agent", "--redo", "--cmd", f"{STUB} unknown")
+        self.assertNotIn("Правка заглушки", self.result())                         # правки прошлого запуска не остались
+        self.assertNotIn("GUI-105", (self.out / P.OUT_RESULT / "trace.md").read_text(encoding="utf-8"))
+        self.assertIn("0.10.0", (self.out / P.OUT_RESULT / "MD_rus/docs/administrator-manual/055_Deploying.md").read_text(encoding="utf-8"))
+
+    def test_retry_written_into_the_first_answer_file_is_taken(self):
+        self.start(**{"NOTASK:0.10.0#7": 1})
+        self.answer("GUI-105__write_doc", **self.edit(quote="такой записи нет в списке изменений совсем"))
+        good = self.tmp / "good.json"
+        good.write_text(json.dumps({"status": "done", "summary": "ок", "steps": [], **self.edit()}, ensure_ascii=False), encoding="utf-8")
+        script = self.tmp / "agent.sh"                     # агент пишет повторный ответ в файл первой попытки
+        script.write_text(f"#!/bin/sh\nif grep -q 'Задание GUI-105__write_doc__retry'; then cp {good} answers/GUI-105__write_doc.json; fi\n",
+                          encoding="utf-8")
+        script.chmod(0o755)
+        self.cli("agent", "--cmd", str(script))
+        q = self.items()
+        self.assertEqual((q["GUI-105__write_doc"]["status"], q["GUI-105__write_doc__retry"]["status"]), ("rejected", "done"))
+
+    def test_json_with_trailing_comma_is_read(self):
+        self.start(**{"NOTASK:0.10.0#7": 1})
+        data = json.dumps({"status": "done", "summary": "ок", "steps": [], **self.edit()}, ensure_ascii=False)
+        (self.ws / "answers/GUI-105__write_doc.json").write_text("```json\n" + data[:-1] + ",}\n```", encoding="utf-8")
+        self.cli("agent")
+        self.assertEqual(self.items()["GUI-105__write_doc"]["status"], "done")
+
+
 class LaunchFailureTest(AgentCase):
     def test_failed_launch_is_repeated_before_it_counts_as_a_rejection(self):
         self.start("--cmd", f"{STUB} fail", **{"NOTASK:0.10.0#7": 1})

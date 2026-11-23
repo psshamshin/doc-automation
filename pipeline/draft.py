@@ -51,7 +51,8 @@ def section_label(unit: Dict[str, Any], titles: Dict[str, str], lang: str) -> st
 def section_choices(index: Dict[str, Any]) -> List[str]:
     """Разделы, из которых агент выбирает метку строки: «Общее» и названия страниц руководства."""
     titles = page_titles(index, "rus")
-    return [P.RN_TITLES["rus"]["general"]] + sorted({t for p, t in titles.items() if p.startswith("user-manual/")})
+    # метка - раздел интерфейса («Раздел "Поиск"»); страницы вроде «Разделы Сервиса» или «Работа с Сервисом» - не разделы
+    return [P.RN_TITLES["rus"]["general"]] + sorted({t for p, t in titles.items() if p.startswith("user-manual/") and t.startswith("Раздел ")})
 
 
 def agent_label(section: Optional[str], index: Dict[str, Any], lang: str, current: Optional[Dict[str, Any]] = None) -> Optional[str]:

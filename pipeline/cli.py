@@ -121,6 +121,13 @@ def cmd_agent(ds: Dataset, args) -> None:
                 "агент не запущен: в проекте лежит документация техписа или результаты сравнения, агент может их прочитать:\n  "
                 + "\n  ".join(exposed) + "\nУберите их из папки проекта на время работы агента (документацию техписа - в любое "
                 "место вне проекта, потом укажите его: compare --reference <папка>). Запустить все равно: --allow-reference")
+    if args.redo:                                  # с нуля: правки прошлых запусков и их ответы не должны остаться
+        RUN.step_workspace(ds, True)
+        DRAFT.bump_versions(ds, units["component_versions"])
+        shutil.rmtree(AG.workspace(ds) / "answers", ignore_errors=True)
+        (AG.workspace(ds) / "progress.md").unlink(missing_ok=True)
+        shutil.rmtree(ds.agent_dir, ignore_errors=True)
+        log("--redo: рабочая копия документации собрана заново, прошлые ответы агента удалены")
     decided = V.decisions(val, us)
     res = AG.run(ds, us, conf, decided, load_json(ds.data_dir / "06_docs_index.json"),
                  load_json(ds.data_dir / "05_stale_texts.json"), dry_run=args.dry_run, cmd=args.cmd, redo=args.redo,

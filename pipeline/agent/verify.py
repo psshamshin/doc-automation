@@ -215,6 +215,19 @@ class Docs:
 
 # ---------------------------------------------------------------- проверка ответа
 
+def _lenient_json(raw: str) -> Optional[Any]:
+    """Частые огрехи моделей: ответ в блоке ```json, лишняя запятая перед } или ]. Содержание не меняется."""
+    t = raw.strip()
+    m = re.search(r"```(?:json)?\s*(.*?)```", t, flags=re.S)
+    if m:
+        t = m.group(1)
+    t = re.sub(r",(\s*[}\]])", r"\1", t)
+    try:
+        return json.loads(t)
+    except json.JSONDecodeError:
+        return None
+
+
 def check_answer(path: Path, item: Dict[str, Any]) -> Dict[str, Any]:
     """Формальная проверка: файл есть, это JSON, обязательные поля на месте."""
     raw = read_text(path)
@@ -223,7 +236,10 @@ def check_answer(path: Path, item: Dict[str, Any]) -> Dict[str, Any]:
     try:
         a = json.loads(raw)
     except json.JSONDecodeError as e:
-        return {"ok": False, "error": f"ответ не является JSON: {e}"}
+        fixed = _lenient_json(raw)
+        if fixed is None:
+            return {"ok": False, "error": f"ответ не является JSON: {e}"}
+        a = fixed
     if not isinstance(a, dict):
         return {"ok": False, "error": "ответ должен быть объектом JSON"}
     if item["kind"] == "release_notes":
