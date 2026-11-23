@@ -29,16 +29,23 @@ def _words(old: str, new: str) -> Tuple[str, str]:
     oa: List[str] = []
     ob: List[str] = []
     for tag, i1, i2, j1, j2 in sm.get_opcodes():
-        x, y = html.escape("".join(a[i1:i2])), html.escape("".join(b[j1:j2]))
         if tag == "equal":
-            oa.append(x)
-            ob.append(y)
+            oa.append(html.escape("".join(a[i1:i2])))
+            ob.append(html.escape("".join(b[j1:j2])))
         else:
-            if x:
-                oa.append(f"<mark>{x}</mark>")
-            if y:
-                ob.append(f"<mark>{y}</mark>")
+            oa.append(_marked(a[i1:i2]))
+            ob.append(_marked(b[j1:j2]))
     return "".join(oa), "".join(ob)
+
+
+def _marked(tokens: List[str]) -> str:
+    """Выделяются слова, а не пробелы по краям: выравнивание таблиц не дает сплошных цветных полос."""
+    idx = [k for k, t in enumerate(tokens) if t.strip()]
+    if not idx:
+        return html.escape("".join(tokens))
+    lo, hi = idx[0], idx[-1] + 1
+    return (html.escape("".join(tokens[:lo])) + "<mark>" + html.escape("".join(tokens[lo:hi])) + "</mark>"
+            + html.escape("".join(tokens[hi:])))
 
 
 def _side(base: List[str], other: Optional[List[str]]) -> Dict[str, Any]:
