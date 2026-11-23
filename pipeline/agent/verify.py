@@ -481,15 +481,10 @@ def verify_rn(answer: Dict[str, Any], expected: List[str]) -> Dict[str, Any]:
             problems[uid] = bad
         else:
             lines[uid] = row
-    skipped: Dict[str, str] = {}
-    for n, x in enumerate(answer.get("no_line") or [], 1):
-        if not isinstance(x, dict) or not x.get("task") or not str(x.get("reason") or "").strip():
-            problems.setdefault(f"no_line {n}", []).append("нужны поля task и reason")
-        else:
-            skipped[str(x["task"])] = str(x["reason"]).strip()
+    skipped: Dict[str, str] = {}                  # отказ от строки не принимается: решение по задаче уже принято
     for uid in expected:
-        if uid not in lines and uid not in skipped and uid not in problems:
-            problems[uid] = ["строки нет: дай строку или причину в no_line"]
+        if uid not in lines and uid not in problems:
+            problems[uid] = ["строки нет: решение по задаче уже принято (в release notes), строка обязательна"]
     return {"problems": {u: p for u, p in problems.items() if u in expected or u.startswith(("строка", "no_line"))},
             "lines": {u: r for u, r in lines.items() if u in expected},
             "skipped": {u: w for u, w in skipped.items() if u in expected}}

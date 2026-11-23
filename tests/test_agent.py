@@ -274,6 +274,15 @@ class RedoTest(AgentCase):
         self.assertEqual(self.items()["GUI-105__write_doc"]["status"], "done")
 
 
+class NoEditsTest(AgentCase):
+    def test_done_without_edits_is_marked_for_a_manual_look(self):
+        self.start(**{"NOTASK:0.10.0#7": 1})
+        self.answer("GUI-105__write_doc", edits=[])
+        self.cli("agent")
+        self.assertEqual(self.items()["GUI-105__write_doc"]["status"], "no_edits")
+        self.assertIn("без правок", self.summary())
+
+
 class LaunchFailureTest(AgentCase):
     def test_failed_launch_is_repeated_before_it_counts_as_a_rejection(self):
         self.start("--cmd", f"{STUB} fail", **{"NOTASK:0.10.0#7": 1})
@@ -405,7 +414,7 @@ class ReleaseNotesTest(AgentCase):
 
     def test_line_is_required_unless_a_reason_is_given(self):
         for mode, status, text in (("rn_missing", "partial", "строки нет"), ("rn_code", "partial", "имя из кода"),
-                                   ("rn_no_line", "done", "без строки по решению агента")):
+                                   ("rn_no_line", "partial", "строка обязательна")):
             with self.subTest(mode):
                 self.cli("agent", "--cmd", f"{STUB} {mode}", "--redo") if self.ws.exists() else self.start("--cmd", f"{STUB} {mode}", **{"NOTASK:0.10.0#7": 1})
                 rn = self.items().get("release_notes__retry") or self.items()["release_notes"]
