@@ -47,9 +47,12 @@ UI_COMPONENT = "point-ui"                 # строка в таблице ве�
 UI_VERSION_VARIABLE = "SECURE_CLIENT_VER"  # переменная с версией интерфейса в руководстве администратора
 
 RN_TITLES = {
-    "rus": {"changes": "Изменения", "fixes": "Исправленные ошибки", "general": "Общее"},
-    "eng": {"changes": "Changes", "fixes": "Fixes", "general": "General"},
+    "rus": {"new": "Новые возможности", "changes": "Изменения", "fixes": "Исправленные ошибки", "general": "Общее"},
+    "eng": {"new": "New features", "changes": "Changes", "fixes": "Fixes", "general": "General"},
 }
+RN_CATEGORIES = ("new", "change", "fix")          # порядок разделов release notes; раздел - по смыслу строки
+RN_SECTION_KEY = {"new": "new", "change": "changes", "fix": "fixes"}
+RN_TITLE_VARIANTS = {"eng": {"fixes": ("Fixes", "Fixed errors")}}     # как раздел назывался в прошлых выпусках
 
 # ---- база знаний (в git)
 KNOWLEDGE_DIR = "knowledge"

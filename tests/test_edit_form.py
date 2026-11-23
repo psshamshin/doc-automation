@@ -81,5 +81,20 @@ class VariablesTest(unittest.TestCase):
             self.assertEqual(DOCS.ci_variables(Path(t)), {})
 
 
+
+class AppLocalesTest(unittest.TestCase):
+    def test_languages_are_read_from_package_json_or_env(self):
+        import json
+        from pipeline.agent.tasks import app_locales
+        with tempfile.TemporaryDirectory() as t:
+            old, new = Path(t) / "old", Path(t) / "new"
+            (old / "apps/point").mkdir(parents=True)
+            (new / "apps/point").mkdir(parents=True)
+            (old / "apps/point/.env").write_text("VITE_LOCALES=en,ru,ptBr\n", encoding="utf-8")
+            (new / "apps/point/package.json").write_text(json.dumps({"vlabs": {"locales": ["en", "ru", "ptBr", "esEs"]}}), encoding="utf-8")
+            self.assertEqual(app_locales(old), ["en", "ru", "ptBr"])
+            self.assertEqual(app_locales(new), ["en", "ru", "ptBr", "esEs"])
+
+
 if __name__ == "__main__":
     unittest.main()

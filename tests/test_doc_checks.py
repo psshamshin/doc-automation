@@ -221,10 +221,11 @@ class DeadNamesTest(unittest.TestCase):
         rules = {"i18n": {"doc_lang_of_locale": {"ru": "rus"}, "file_globs": ["**/i18n/**"]}}
         ds = SimpleNamespace(result_dir=root / "result", data_dir=data, langs=["rus"], rules=rules,
                              slot=lambda name: old if name == P.SLOT_CODE_OLD else new)
-        found = CHK.dead_names(ds, {"user-manual/140_H.md"}, {"rus": set()})
+        found = CHK.dead_names(ds, {"user-manual/140_H.md"}, {"rus": {"Если, сохранять"}})
         self.assertEqual([(x["file"], x["target"]) for x in found], [("user-manual/140_H.md", "Сохранять, если")])  # «Заголовок» используется
         self.assertIn("packages/pages/h/forms/Form.jsx", found[0]["code"])
         self.assertEqual(found[0]["code"][0], "packages/pages/h/i18n/index.ts")
+        self.assertIn("«Если, сохранять»", found[0]["why"])                       # похожий текст интерфейса предложен
 
 
 if __name__ == "__main__":

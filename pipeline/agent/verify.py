@@ -26,6 +26,11 @@ VIRTUAL_SOURCES = ("changelog", "i18n", "jira")
 MAX_EDIT_LINES = 30
 MAX_FIND_CHARS = 2000
 APPROX_RATIO = 0.96
+RN_CATEGORIES = ("new", "change", "fix")
+RN_MAX_CHARS = 200
+FIX_WORDING_RE = re.compile(r"^\s*(Исправлен|Устранен|Устранена|Устранено)", re.I)
+NEW_WORDING_RE = re.compile(r"^\s*(Добавлен|Появил)", re.I)
+RN_DETAIL_RE = re.compile(r"\d+\s*(px|пикс)|\bpx\b|localStorage|sessionStorage", re.I)
 VAR_RE = re.compile(r"\{\{\s*(\w+)\s*\}\}")
 MD_LINK_RE = re.compile(r"\]\(([^)\s#]+\.md)(?:#[^)\s]*)?\)")
 QUOTED_RE = re.compile(r"«([^»\n]{2,80})»|\"([^\"\n]{2,80})\"|“([^”\n]{2,80})”")
@@ -435,14 +440,25 @@ def verify_rn(answer: Dict[str, Any], expected: List[str]) -> Dict[str, Any]:
         uid = str(x["task"])
         if uid in lines:
             continue                                  # лишние строки одной задачи игнорируются: берется первая
-        row = {"ru": str(x.get("ru") or "").strip(), "en": str(x.get("en") or "").strip(), "section": str(x.get("section") or "").strip()}
+        row = {"ru": str(x.get("ru") or "").strip(), "en": str(x.get("en") or "").strip(), "section": str(x.get("section") or "").strip(),
+               "category": str(x.get("category") or "").strip()}
         bad = []
+        if row["category"] not in RN_CATEGORIES:
+            bad.append("нужно поле category: new (новая возможность), change (изменение) или fix (исправленная ошибка)")
+        elif FIX_WORDING_RE.match(row["ru"]) and row["category"] != "fix":
+            bad.append("строка описывает исправление ошибки, а раздел не fix: исправления идут только в «Исправленные ошибки»")
+        elif row["category"] == "fix" and NEW_WORDING_RE.match(row["ru"]):
+            bad.append("строка описывает новую возможность, а раздел fix: выбери new или переформулируй как исправление")
         for lang in ("ru", "en"):
             t = row[lang]
             if not t or "\n" in t:
                 bad.append(f"формулировка {lang} пустая или в несколько строк")
             if "`" in t or "<!--" in t or re.search(r"\b[A-Z][a-z0-9]+(?:[A-Z][a-z0-9]+)+\b", t):
                 bad.append(f"в формулировке {lang} осталось имя из кода или служебная пометка")
+            if len(t) > RN_MAX_CHARS:
+                bad.append(f"формулировка {lang} длиннее {RN_MAX_CHARS} знаков: оставь, что изменилось для пользователя, без подробностей")
+            if RN_DETAIL_RE.search(t):
+                bad.append(f"в формулировке {lang} технические подробности (пиксели, ширина окна, хранилище браузера): опиши, что изменилось для пользователя")
         if not re.search(r"[А-Яа-я]", row["ru"]) or re.search(r"[А-Яа-я]", row["en"]):
             bad.append("формулировки перепутаны по языкам или не переведены")
         if bad:

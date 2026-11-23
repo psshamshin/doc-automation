@@ -106,9 +106,9 @@ class FullRunTest(AgentCase):
         self.assertIn("# [0.2.0] 01.03.2026 {-}", rn)
         self.assertRegex(rn, r"\| point-ui\s+\| 0\.10\.0\s+\|")
         changes, fixes = rn.split("**Исправленные ошибки**")
-        self.assertIn("- **[Общее]**: Изменение по задаче GUI-105.", changes)
+        self.assertIn("- **[Общее]**:\n\n    - Изменение по задаче GUI-105.", changes)          # строки одной метки - списком
         self.assertTrue("GUI-106" in fixes and "GUI-103" in fixes and "NOTASK" not in rn)      # раздел по типу записей
-        self.assertIn('- **[General]**: Change for task GUI-105.',
+        self.assertIn('    - Change for task GUI-105.',
                       (self.out / P.OUT_RESULT / "MD_eng/docs/release-notes/020.md").read_text(encoding="utf-8"))
         self.assertIn("- 020.md\n        - 010.md", (self.out / P.OUT_RESULT / "MD_rus/docs/release-notes/.pages").read_text(encoding="utf-8"))
         self.assertIn("Состояние: принято - 7.", self.summary())
@@ -385,14 +385,32 @@ class ReleaseNotesTest(AgentCase):
     def test_section_label_is_chosen_by_the_agent_and_translated_by_code(self):
         self.start(**{"NOTASK:0.10.0#7": 1})
         tasks = ["GUI-103", "GUI-104", "GUI-105", "GUI-106"]
-        lines = [{"task": t, "section": 'Раздел "Заказы"' if t == "GUI-105" else "Общее", "ru": f"Изменение {t}.", "en": f"Change {t}."} for t in tasks]
+        lines = [{"task": t, "category": "change", "section": 'Раздел "Заказы"' if t == "GUI-105" else "Общее", "ru": f"Изменение {t}.",
+                  "en": f"Change {t}."} for t in tasks]
         (self.ws / "answers").mkdir(parents=True, exist_ok=True)
         (self.ws / "answers/release_notes.json").write_text(json.dumps({"lines": lines}, ensure_ascii=False), encoding="utf-8")
         self.cli("agent")
         self.assertIn('- **[Раздел "Заказы"]**: Изменение GUI-105.', self.rn.read_text(encoding="utf-8"))
         self.assertIn('- **["Orders" section]**: Change GUI-105.',
                       (self.out / P.OUT_RESULT / "MD_eng/docs/release-notes/020.md").read_text(encoding="utf-8"))
-        self.assertIn("- **[Общее]**: Изменение GUI-104.", self.rn.read_text(encoding="utf-8"))
+        self.assertIn("    - Изменение GUI-104.", self.rn.read_text(encoding="utf-8"))
+
+    def test_sections_are_fixed_and_follow_the_meaning(self):
+        self.start(**{"NOTASK:0.10.0#7": 1})
+        lines = [{"task": "GUI-103", "category": "fix", "section": "Общее", "ru": "Исправлен сброс заголовка.", "en": "Fixed the title reset."},
+                 {"task": "GUI-104", "category": "new", "section": "Общее", "ru": "Добавлены испанский и португальский языки.", "en": "Added languages."},
+                 {"task": "GUI-105", "category": "change", "section": "Общее", "ru": "Исправлен фильтр по дате.", "en": "Fixed the date filter."},
+                 {"task": "GUI-106", "category": "change", "section": "Общее", "ru": "Кнопки сдвинуты на 12 px вправо.", "en": "Buttons moved."}]
+        (self.ws / "answers").mkdir(parents=True, exist_ok=True)
+        (self.ws / "answers/release_notes.json").write_text(json.dumps({"lines": lines}, ensure_ascii=False), encoding="utf-8")
+        self.cli("agent")
+        probs = " ".join(self.items()["release_notes"]["problems"])
+        self.assertIn("GUI-105: строка описывает исправление ошибки", probs)           # исправление не может быть изменением
+        self.assertIn("GUI-106: в формулировке ru технические подробности", probs)
+        rn = self.rn.read_text(encoding="utf-8")
+        self.assertLess(rn.index("**Новые возможности**"), rn.index("**Исправленные ошибки**"))
+        self.assertNotIn("**Изменения**", rn)                                           # пустой раздел не выводится
+        self.assertIn("**Fixes**", (self.out / P.OUT_RESULT / "MD_eng/docs/release-notes/020.md").read_text(encoding="utf-8"))
 
     def test_file_follows_the_final_decisions(self):
         # агент решил по спорной задаче skip: ее строки в release notes нет

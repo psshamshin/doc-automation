@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import difflib
+import json
 import os
 import re
 import shlex
@@ -160,6 +161,37 @@ def build_digest(ds, u: Dict[str, Any]) -> str:
     return "\n".join(L)
 
 
+APP_LOCALE_FILES = ("apps/point/package.json", "apps/point/.env", "apps/point/.env.production")
+
+
+def app_locales(root: Path) -> List[str]:
+    """Языки, включенные в настройках приложения: vlabs.locales в package.json, иначе VITE_LOCALES в .env."""
+    pkg = root / APP_LOCALE_FILES[0]
+    if pkg.is_file():
+        try:
+            loc = (json.loads(read_text(pkg) or "{}").get("vlabs") or {}).get("locales")
+        except ValueError:
+            loc = None
+        if loc:
+            return [str(x) for x in loc]
+    for name in APP_LOCALE_FILES[1:]:
+        m = re.search(r"^\s*VITE_LOCALES\s*=\s*(\S+)", read_text(root / name) or "", flags=re.M)
+        if m:
+            return [x.strip() for x in m.group(1).strip("\"'").split(",") if x.strip()]
+    return []
+
+
+def app_locales_text(ds) -> str:
+    """Факт для задачи о языках: какие языки включены в прошлой и новой версии (код сравнил настройки сам)."""
+    old, new = app_locales(ds.slot(P.SLOT_CODE_OLD)), app_locales(ds.slot(P.SLOT_CODE_NEW))
+    if not old and not new:
+        return ""
+    added, removed = [x for x in new if x not in old], [x for x in old if x not in new]
+    return (f"языки, включенные в настройках приложения: прошлая версия - {', '.join(old) or 'не найдено'}; новая - {', '.join(new) or 'не найдено'}"
+            + (f"; добавлены: {', '.join(added)}" if added else "") + (f"; убраны: {', '.join(removed)}" if removed else "")
+            + ("; набор не изменился" if not added and not removed else ""))
+
+
 def _mentions_languages(u: Dict[str, Any]) -> bool:
     return any("локал" in e["text"].lower() or "язык" in e["text"].lower() for e in u["entries"])
 
@@ -254,6 +286,10 @@ def _unit_context(ds, u: Dict[str, Any], conf: Dict[str, Any]) -> str:
         L += [f"- добавлен [{x['locale']}]: «{x['value']}»" for x in i["added"][:40]]
         L += [f"- удален [{x['locale']}]: «{x['value']}»" for x in i["removed"][:40]]
         L += [f"- изменен [{x['locale']}]: «{x['old']}» -> «{x['new']}»" for x in i["changed"][:40]]
+    if _mentions_languages(u):
+        fact = app_locales_text(ds)
+        if fact:
+            L += ["", f"Настройки языков (код сравнил обе версии): {fact}."]
     if u.get("jira"):
         L += ["", f"Задача в Jira: {u['jira'].get('summary') or ''}", "", (u["jira"].get("description") or "")[:1500]]
     src_files = [f for f in u["files"] if f.get("relevant") and f["category"] == "source"]
@@ -332,8 +368,10 @@ def _checks_context(ds, u: Dict[str, Any]) -> str:
         L += _variables_hint(ds)
     if any(x["check"] == "dead_name" for x in fx):
         L += ["", "Для «названия не было на экране и до релиза»: текст есть в переводах прошлой версии, но код его не выводил. Найди в "
-                  "приложенном коде новой версии, какой текст выводится на этом месте (ключ перевода в коде, его текст - в файле "
-                  "переводов из того же списка), и замени им. Подтверди цитатами из кода. Если по коду не видно, не правь."]
+                  "приложенном коде новой версии, какой текст выводится на этом месте: в коде стоит ключ перевода, а не текст, поэтому "
+                  "ищи сначала в файле переводов (первый в списке), затем ключ в коде. Если у находки указаны похожие тексты интерфейса и "
+                  "один из них - тот же элемент (например, те же слова в другом порядке), замени на него. Подтверди цитатами. "
+                  "Если не видно, не правь."]
     if any(x["check"] == "ui_name" for x in fx):
         L += ["", "Для «названия нет в интерфейсе»: название в кавычках не найдено в текстах интерфейса новой версии (документация могла "
                   "устареть еще до релиза). Если это название элемента интерфейса и один из похожих - тот же элемент с текущим названием, "
@@ -361,10 +399,16 @@ def _release_notes_context(ds, units: Dict[str, Any], decisions: Dict[str, str])
         state = {"doc": "изменение", "langs": "изменение: набор языков", "rn": "исправление ошибки",
                  "agent": "решение принимаешь ты в задании decide: давай строку, только если решил doc, rn или langs"}[d]
         L += [f"### {uid} ({state})", ""]
+        hint = "fix" if DRAFT.is_fix_unit(u, decisions) else "change"
+        L.append(f"- раздел по записям разработчиков (подсказка, решаешь по смыслу): {hint}")
+        langs = app_locales_text(ds) if d == "langs" else ""
+        if langs:
+            L.append(f"- {langs}")
         title = DRAFT.jira_title(u)
         if title:
             L.append(f"- название задачи (внутреннее, не для пользователя): {title}")
-        L += [f"- запись разработчиков: {t}" for t in (DRAFT.significant_texts(u) or [e["text"] for e in u["entries"]])[:10]]
+        sig = [e for e in u["entries"] if e["_flags"].get("significant")] or u["entries"]
+        L += [f"- запись разработчиков [{e['section']}]: {e['text'].strip()}" for e in sig[:10]]
         L.append("")
     return "\n".join(L)
 

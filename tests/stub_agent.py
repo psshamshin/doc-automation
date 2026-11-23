@@ -67,7 +67,9 @@ if kind == "release_notes":
         if "решение принимаешь ты" in state and uid != "GUI-103":
             continue                          # заглушка решает skip по всем спорным задачам, кроме GUI-103
         ru = "Переведено на resetFilters из `useFilters`." if mode == "rn_code" else f"Изменение по задаче {uid}."
-        lines.append({"task": uid, "section": "Общее", "ru": ru, "en": f"Change for task {uid}."})
+        block = prompt.split(f"### {uid} (", 1)[1].split("###", 1)[0]
+        cat = "fix" if "(подсказка, решаешь по смыслу): fix" in block or "исправление" in state or uid == "GUI-103" else "change"
+        lines.append({"task": uid, "category": cat, "section": "Общее", "ru": ru, "en": f"Change for task {uid}."})
     data = {"lines": lines}
     if mode == "rn_no_line":
         skipped = lines.pop()
