@@ -370,13 +370,11 @@ def apply_auto_names(ds, docs, findings: List[Dict[str, Any]]) -> List[Dict[str,
         text = docs.text(f)
         if text is None:
             continue
-        lines = text.split("\n")
-        q = "[«»\"“”]"
-        new = re.sub("(" + q + ")" + re.escape(x["target"]) + "(" + q + ")", lambda m: m.group(1) + x["auto"] + m.group(2), lines[x["line"] - 1])
-        if new != lines[x["line"] - 1]:
-            lines[x["line"] - 1] = new
-            docs.put(f, "\n".join(lines))
-            done.append({"file": f, "what": f"«{x['target']}» -> «{x['auto']}» (текст интерфейса)"})
+        q = "[«»\"“”]"                               # все упоминания в кавычках на странице, не только найденное
+        new, n = re.subn("(" + q + ")" + re.escape(x["target"]) + "(" + q + ")", lambda m: m.group(1) + x["auto"] + m.group(2), text)
+        if n:
+            docs.put(f, new)
+            done.append({"file": f, "what": f"«{x['target']}» -> «{x['auto']}» (текст интерфейса, упоминаний: {n})"})
     docs.save()
     return done
 

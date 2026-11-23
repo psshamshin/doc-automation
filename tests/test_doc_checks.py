@@ -245,7 +245,7 @@ class IncludeLinksTest(unittest.TestCase):
 class AutoNamesTest(unittest.TestCase):
     def test_same_words_in_other_order_are_replaced_by_code(self):
         class FakeDocs:
-            def __init__(self): self.t = {"docs/MD_eng/docs/user-manual/110_Card.md": '# "Index card and lists" section\n'}
+            def __init__(self): self.t = {"docs/MD_eng/docs/user-manual/110_Card.md": '# "Index card and lists" section\n\nThe “Index card and lists” page.\n'}
             def text(self, f): return self.t.get(f)
             def put(self, f, x): self.t[f] = x
             def save(self): pass
@@ -254,7 +254,7 @@ class AutoNamesTest(unittest.TestCase):
         done = CHK.apply_auto_names(None, d, [{"lang": "eng", "file": "user-manual/110_Card.md", "line": 1,
                                                "target": "Index card and lists", "auto": "Card index and lists"}])
         self.assertEqual(len(done), 1)
-        self.assertEqual(d.t["docs/MD_eng/docs/user-manual/110_Card.md"], '# "Card index and lists" section\n')
+        self.assertEqual(d.t["docs/MD_eng/docs/user-manual/110_Card.md"], '# "Card index and lists" section\n\nThe “Card index and lists” page.\n')
 
 
 if __name__ == "__main__":
