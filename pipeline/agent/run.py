@@ -31,7 +31,7 @@ from .verify import _ui_vocabulary, Docs, apply_ops, check_answer, rename_pairs,
 CMD_TRIES = 3                      # запусков команды агента на одно задание при сбое запуска
 
 NAMES = {"done": "принято", "unknown": "агент не нашел фактов", "rejected": "отклонено, нужна повторная попытка",
-         "partial": "принято частично, часть правок отклонена", "dropped": "не внесено: отклонено дважды", "prepared": "ждет агента", "waiting": "ждет решений по задачам"}
+         "partial": "принято частично, часть правок отклонена", "no_edits": "без правок: агент не предложил ни одной", "dropped": "не внесено: отклонено дважды", "prepared": "ждет агента", "waiting": "ждет решений по задачам"}
 
 
 def _digest(p: Path) -> str:
@@ -137,8 +137,14 @@ def run(ds, units: List[Dict[str, Any]], conf: Dict[str, Any], decisions: Dict[s
                     log(f"агент не отработал ({err}); повтор через {pause} с")
                     time.sleep(pause)
             seconds[rec["id"]] = int(time.time() - t0)
+            first = answer_of({"id": rec["retry_of"]}) if rec.get("retry_of") else None
+            if not path.exists() and first is not None and first.is_file() and _digest(first) != rec.get("first_sha"):
+                shutil.copyfile(first, path)          # агент записал повторный ответ в файл первой попытки
+                log(f"{rec['id']}: ответ записан в файл первой попытки, принят как повторный")
             if err:
                 errors[rec["id"]] = err
+            elif not path.exists():
+                errors[rec["id"]] = "агент завершился, но не записал файл ответа"
 
     def finish(rec, check: Dict[str, Any], verified: Optional[Dict[str, Any]] = None) -> None:
         a = check.get("answer") or {}
@@ -150,7 +156,7 @@ def run(ds, units: List[Dict[str, Any]], conf: Dict[str, Any], decisions: Dict[s
         path = answer_of(rec)
         old = prev.get(rec["id"], {})
         if rec["kind"] != "release_notes" and path.is_file() and old.get("answer_sha") == _digest(path) \
-                and old.get("status") in ("done", "unknown", "dropped", "partial") and not redo:
+                and old.get("status") in ("done", "unknown", "dropped", "partial", "no_edits") and not redo:
             rec.update({k: old[k] for k in ("status", "note", "problems", "applied", "decision", "steps", "questions",
                                             "summary", "approx", "seconds", "renames") if k in old})
             rec["answer_sha"] = old["answer_sha"]
@@ -186,6 +192,8 @@ def run(ds, units: List[Dict[str, Any]], conf: Dict[str, Any], decisions: Dict[s
         if v["problems"]:
             rec.update(status="partial" if ops else "rejected", problems=v["problems"],
                        note="; ".join(v["problems"][:2]) + (f"; и еще: {len(v['problems']) - 2}" if len(v["problems"]) > 2 else ""))
+        elif rec["kind"] == "write_doc" and a["status"] == "done" and not ops:
+            rec.update(status="no_edits", note=rec["summary"])          # проверить вручную: задача видимая, а правок нет
         else:
             rec.update(status=a["status"], note=rec["summary"])
 
@@ -195,7 +203,8 @@ def run(ds, units: List[Dict[str, Any]], conf: Dict[str, Any], decisions: Dict[s
         (evaluate_rn if rn else evaluate)(r1)
         out = [r1]
         if r1["status"] in ("rejected", "partial"):
-            r2 = new_rec({**base, "id": base["id"] + "__retry"}, retry_of=base["id"], problems_before=r1["problems"])
+            r2 = new_rec({**base, "id": base["id"] + "__retry"}, retry_of=base["id"], problems_before=r1["problems"],
+                         first_sha=r1.get("answer_sha"))
             (evaluate_rn if rn else evaluate)(r2)
             if r2["status"] == "rejected":
                 r2["status"] = "dropped"

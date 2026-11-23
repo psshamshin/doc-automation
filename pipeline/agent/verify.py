@@ -215,6 +215,19 @@ class Docs:
 
 # ---------------------------------------------------------------- проверка ответа
 
+def _lenient_json(raw: str) -> Optional[Any]:
+    """Частые огрехи моделей: ответ в блоке ```json, лишняя запятая перед } или ]. Содержание не меняется."""
+    t = raw.strip()
+    m = re.search(r"```(?:json)?\s*(.*?)```", t, flags=re.S)
+    if m:
+        t = m.group(1)
+    t = re.sub(r",(\s*[}\]])", r"\1", t)
+    try:
+        return json.loads(t)
+    except json.JSONDecodeError:
+        return None
+
+
 def check_answer(path: Path, item: Dict[str, Any]) -> Dict[str, Any]:
     """Формальная проверка: файл есть, это JSON, обязательные поля на месте."""
     raw = read_text(path)
@@ -223,7 +236,10 @@ def check_answer(path: Path, item: Dict[str, Any]) -> Dict[str, Any]:
     try:
         a = json.loads(raw)
     except json.JSONDecodeError as e:
-        return {"ok": False, "error": f"ответ не является JSON: {e}"}
+        fixed = _lenient_json(raw)
+        if fixed is None:
+            return {"ok": False, "error": f"ответ не является JSON: {e}"}
+        a = fixed
     if not isinstance(a, dict):
         return {"ok": False, "error": "ответ должен быть объектом JSON"}
     if item["kind"] == "release_notes":
@@ -465,15 +481,10 @@ def verify_rn(answer: Dict[str, Any], expected: List[str]) -> Dict[str, Any]:
             problems[uid] = bad
         else:
             lines[uid] = row
-    skipped: Dict[str, str] = {}
-    for n, x in enumerate(answer.get("no_line") or [], 1):
-        if not isinstance(x, dict) or not x.get("task") or not str(x.get("reason") or "").strip():
-            problems.setdefault(f"no_line {n}", []).append("нужны поля task и reason")
-        else:
-            skipped[str(x["task"])] = str(x["reason"]).strip()
+    skipped: Dict[str, str] = {}                  # отказ от строки не принимается: решение по задаче уже принято
     for uid in expected:
-        if uid not in lines and uid not in skipped and uid not in problems:
-            problems[uid] = ["строки нет: дай строку или причину в no_line"]
+        if uid not in lines and uid not in problems:
+            problems[uid] = ["строки нет: решение по задаче уже принято (в release notes), строка обязательна"]
     return {"problems": {u: p for u, p in problems.items() if u in expected or u.startswith(("строка", "no_line"))},
             "lines": {u: r for u, r in lines.items() if u in expected},
             "skipped": {u: w for u, w in skipped.items() if u in expected}}

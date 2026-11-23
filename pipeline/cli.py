@@ -116,11 +116,18 @@ def cmd_agent(ds: Dataset, args) -> None:
         raise DatasetError("в файле проверки нет задач: " + ", ".join(unknown) + ". Перезапустите collect")
     if AG.agent_cmd(args.cmd) and not args.dry_run:
         exposed = ds.reference_exposed()
-        if exposed and not args.allow_reference:
+        if exposed:
             raise DatasetError(
                 "агент не запущен: в проекте лежит документация техписа или результаты сравнения, агент может их прочитать:\n  "
                 + "\n  ".join(exposed) + "\nУберите их из папки проекта на время работы агента (документацию техписа - в любое "
-                "место вне проекта, потом укажите его: compare --reference <папка>). Запустить все равно: --allow-reference")
+                "место вне проекта, потом укажите его: compare --reference <папка>).")
+    if args.redo:                                  # с нуля: правки прошлых запусков и их ответы не должны остаться
+        RUN.step_workspace(ds, True)
+        DRAFT.bump_versions(ds, units["component_versions"])
+        shutil.rmtree(AG.workspace(ds) / "answers", ignore_errors=True)
+        (AG.workspace(ds) / "progress.md").unlink(missing_ok=True)
+        shutil.rmtree(ds.agent_dir, ignore_errors=True)
+        log("--redo: рабочая копия документации собрана заново, прошлые ответы агента удалены")
     decided = V.decisions(val, us)
     res = AG.run(ds, us, conf, decided, load_json(ds.data_dir / "06_docs_index.json"),
                  load_json(ds.data_dir / "05_stale_texts.json"), dry_run=args.dry_run, cmd=args.cmd, redo=args.redo,
@@ -185,8 +192,6 @@ def main(argv: Optional[List[str]] = None) -> None:
     ap.add_argument("--redo", action="store_true", help="agent: выполнить заново уже выполненные задания")
     ap.add_argument("--cmd", help="agent: команда запуска агента; текст задания подается ей на стандартный ввод")
     ap.add_argument("--reference", help="compare: папка с документацией техписа, если ее нет во входных данных")
-    ap.add_argument("--allow-reference", action="store_true",
-                    help="agent: запустить, даже если документация техписа лежит в проекте (результат нельзя считать чистым)")
     ap.add_argument("--timeout", type=int, default=1800, help="agent: секунд на одно задание")
     args = ap.parse_args(argv)
     t0 = time.time()
