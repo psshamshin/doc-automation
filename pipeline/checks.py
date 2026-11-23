@@ -396,8 +396,13 @@ def dead_names(ds, pages: Set[str], vocab: Dict[str, Set[str]]) -> List[Dict[str
             continue
         seen.add((lang, page, term))
         code = list(dict.fromkeys(c for k in ks for c in _package_code(new_root, ds.slot(P.SLOT_CODE_OLD), k["file"], term, changed, DEAD_CODE_FILES)))
+        words = sorted(vocab.get(lang, set()))
+        bag = sorted(term.lower().split())
+        near = [w for w in words if sorted(w.lower().split()) == bag]          # те же слова в другом порядке
+        near += [w for w in difflib.get_close_matches(term, words, n=3, cutoff=0.5) if w not in near]
         out.append({"lang": lang, "file": page, "line": n, "target": term, "new": False, "code": code,
-                    "why": "ключ этого текста не используется в коде прошлой версии: на экране его не было и до релиза; "
+                    "why": ("похожие тексты интерфейса новой версии: " + ", ".join(f"«{w}»" for w in near[:3]) + "; " if near else "")
+                           + "ключ этого текста не используется в коде прошлой версии: на экране его не было и до релиза; "
                            "что выводится на этом месте, ищи в коде пакета `code/" + str(Path(code[-1]).parent) + "/` (сначала: "
                            + ", ".join(f"`{Path(c).name}`" for c in code[1:4]) + ")"})
     return out

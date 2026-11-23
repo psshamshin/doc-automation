@@ -7,6 +7,7 @@ Release notes собираются только из формулировок, �
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from . import docs as DOCS
@@ -55,6 +56,18 @@ def agent_label(section: Optional[str], index: Dict[str, Any], lang: str) -> Opt
     ru = page_titles(index, "rus")
     page = next((p for p, t in ru.items() if t == section), None)
     return page_titles(index, lang).get(page) if page else None
+
+
+def rn_title(rn_dir: Path, lang: str, cat: str) -> str:
+    """Заголовок раздела release notes: как он назван в последнем выпуске, где встречается, иначе стандартный."""
+    key = P.RN_SECTION_KEY[cat]
+    variants = P.RN_TITLE_VARIANTS.get(lang, {}).get(key, (P.RN_TITLES[lang][key],))
+    for f in sorted(rn_dir.glob("*.md"), key=lambda p: p.name, reverse=True) if rn_dir.is_dir() else []:
+        text = read_text(f) or ""
+        for v in variants:
+            if re.search(r"^\*\*" + re.escape(v) + r"\*\*\s*$", text, flags=re.M):
+                return v
+    return variants[0]
 
 
 def is_fix_unit(unit: Dict[str, Any], decisions: Dict[str, str]) -> bool:
@@ -114,8 +127,10 @@ def write_release_notes(ds, units: List[Dict[str, Any]], decisions: Dict[str, st
                         lines: Dict[str, Dict[str, str]]) -> List[str]:
     """Собирает файлы release notes RU и EN. lines: задача -> {ru, en, section}.
 
-    Структура по образцу файла прошлого релиза: заголовок, таблица версий (версия интерфейса обновлена),
-    разделы «Изменения» и «Исправленные ошибки». Возвращает пути собранных файлов.
+    Структура по образцу файла прошлого релиза: заголовок, таблица версий (версия интерфейса обновлена), затем разделы
+    в постоянном порядке: «Новые возможности», «Изменения», «Исправленные ошибки» (только непустые). Раздел строки задает
+    агент (category) по смыслу. Строки одного раздела документации собираются под одной меткой вложенным списком.
+    Возвращает пути собранных файлов.
     """
     v = ds.versions
     written = []
@@ -137,15 +152,23 @@ def write_release_notes(ds, units: List[Dict[str, Any]], decisions: Dict[str, st
                     return m.group(1) + v["ui_new"] + " " * pad + m.group(4)
                 L += [comp_title, "", *[rx.sub(repl, r) for r in rows[ti[0]:ti[-1] + 1]], ""]
         accepted = [u for u in units if decisions.get(u["id"]) in ("doc", "langs", "rn") and u["id"] in lines]
-        for title, group in ((T["changes"], [u for u in accepted if not is_fix_unit(u, decisions)]),
-                             (T["fixes"], [u for u in accepted if is_fix_unit(u, decisions)])):
+        for cat in P.RN_CATEGORIES:
+            group = [u for u in accepted if (lines[u["id"]].get("category") or ("fix" if is_fix_unit(u, decisions) else "change")) == cat]
             if not group:
                 continue
-            L += [f"**{title}**", ""]
+            L += [f"**{rn_title(root, lang, cat)}**", ""]
+            by_label: Dict[str, List[str]] = {}
             for u in group:
                 row = lines[u["id"]]
                 label = agent_label(row.get("section"), index, lang) or section_label(u, titles, lang)
-                L += [f"- **[{label}]**: {row['ru' if lang == 'rus' else 'en'].strip()}", ""]
+                by_label.setdefault(label, []).append(row["ru" if lang == "rus" else "en"].strip())
+            order = sorted(by_label, key=lambda x: (x != T["general"], list(by_label).index(x)))
+            for label in order:
+                items = by_label[label]
+                if len(items) == 1:
+                    L += [f"- **[{label}]**: {items[0]}", ""]
+                else:                                  # несколько строк одного раздела - вложенным списком, как у техписа
+                    L += [f"- **[{label}]**:", ""] + [f"    - {x}" for x in items] + [""]
         if prev and "\\clearpage" in prev:
             L += ["", "\\clearpage", ""]
         save_text(target, "\n".join(L).rstrip("\n") + "\n")
