@@ -125,6 +125,13 @@ class CompareViewTest(unittest.TestCase):
         self.assertEqual((changed[0], changed[1]), ("<mark>старая</mark> строка", "<mark>новая</mark> строка"))
         self.assertEqual(CV.file_rows("версия 1\n", "версия 2\n", "версия 3\n")["stats"]["diff"], 1)
 
+    def test_new_file_lines_are_aligned_between_pipeline_and_writer(self):
+        fr = CV.file_rows(None, "# Выпуск\n\n**Изменения**\n\n- Поиск: исправлено\n", "# Выпуск\n\n- Поиск: исправлено быстро\n")
+        kinds = [(r[3], r[4]) for r in fr["rows"]]
+        self.assertEqual(kinds[0], ("add", "add"))                                   # общий заголовок в одной строке
+        self.assertIn(("chg", "chg"), kinds)                                         # похожие строки рядом
+        self.assertEqual(fr["stats"]["gen"], 2)                                      # раздел и пустая строка только у пайплайна
+
     def test_page_is_escaped_and_self_contained(self):
         fr = CV.file_rows("a <b>\n", "a <script>x</script>\n", "a <b>\n")
         page = CV.render_page({"rus": [{"path": "p.md", "kind": "gen", **fr}]}, "Сравнение")

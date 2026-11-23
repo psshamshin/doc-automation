@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import difflib
 import re
+import unicodedata
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
@@ -70,6 +71,51 @@ def _includers(pages: Dict[str, List[str]]) -> Dict[str, List[str]]:
     return out
 
 
+def _link_dest(page: str, path: str, pages: Dict[str, List[str]]) -> str:
+    """Страница, на которую ведет ссылка со страницы page. Пустой путь - та же страница."""
+    if not path:
+        return page
+    if path.endswith(".md"):
+        return _norm(str(Path(page).parent / path))
+    # ссылка в формате собранного сайта: страница a/b.md открывается как a/b/, путь считается от нее
+    site = _norm(str(Path(page).with_suffix("") / path))
+    return site + ".md" if site + ".md" in pages else site + "/index.md"
+
+
+HEADING_TEXT_RE = re.compile(r"^#{1,6}\s+(.+?)\s*$")
+
+
+def _slugs(text: str) -> Set[str]:
+    """Якоря, которые сайт делает из заголовка сам: латиницей (по умолчанию MkDocs) и с сохранением букв."""
+    t = re.sub(r"\s*\{[^}]*\}\s*$", "", text).strip()
+    out = set()
+    for v in (unicodedata.normalize("NFKD", t).encode("ascii", "ignore").decode(), t):
+        v = re.sub(r"[-\s]+", "-", re.sub(r"[^\w\s-]", "", v).strip().lower())
+        if v:
+            out.add(v)
+    return out
+
+
+def _anchors(pages: Dict[str, List[str]]) -> Dict[str, Set[str]]:
+    """Якоря страницы: заданные явно {#id}, сделанные из заголовков, и те же у подключаемых ею файлов."""
+    own = {p: {a for l in ls for a in ANCHOR_RE.findall(l)} | {s for l in ls for m in [HEADING_TEXT_RE.match(l)] if m for s in _slugs(m.group(1))}
+           for p, ls in pages.items()}
+    full: Dict[str, Set[str]] = {}
+    for p, ls in pages.items():
+        acc, todo, seen = set(own[p]), [p], {p}
+        while todo:
+            cur = todo.pop()
+            for l in pages.get(cur, []):
+                for inc in INCLUDE_RE.findall(l):
+                    q = _norm(str(Path(cur).parent / inc))
+                    if q in pages and q not in seen:
+                        seen.add(q)
+                        acc |= own[q]
+                        todo.append(q)
+        full[p] = acc
+    return full
+
+
 def _image_targets(page: str, link: str, includers: Dict[str, List[str]]) -> List[str]:
     """Возможные места картинки. Сайт собирается так, что страница становится папкой: '../Imgs/x.png' со
     страницы user-manual/100_Search.md - это user-manual/Imgs/x.png."""
@@ -87,7 +133,7 @@ def check_tree(root: Path, image_root: Path, lang: str) -> Dict[str, List[Dict[s
     pages = _pages(root)
     images = _image_files(image_root)
     includers = _includers(pages)
-    anchors = {page: {a for line in lines for a in ANCHOR_RE.findall(line)} for page, lines in pages.items()}
+    anchors = _anchors(pages)
     links: List[Dict[str, Any]] = []
     brands: List[Dict[str, Any]] = []
     img_missing: List[Dict[str, Any]] = []
@@ -116,19 +162,16 @@ def check_tree(root: Path, image_root: Path, lang: str) -> Dict[str, List[Dict[s
                     else:
                         img_missing.append({"lang": lang, "file": page, "line": n, "target": path, "why": "файла картинки нет"})
                     continue
-                dest = page
-                if path:
-                    if path.endswith(".md"):
-                        dest = _norm(str(Path(page).parent / path))
-                    elif "." in Path(path).name or path.endswith("/"):
-                        continue                      # файл не из исходников или раздел сайта
-                    else:
-                        # ссылка в формате собранного сайта: страница a/b.md открывается как a/b/, путь считается от нее
-                        site = _norm(str(Path(page).with_suffix("") / path))
-                        dest = site + ".md" if site + ".md" in pages else site + "/index.md"
-                    if dest not in pages:
-                        links.append({"lang": lang, "file": page, "line": n, "target": target, "why": "страницы нет"})
-                        continue
+                if path and "." in Path(path).name and not path.endswith(".md") or path.endswith("/"):
+                    continue                          # файл не из исходников или раздел сайта
+                if page in orphans:
+                    continue                          # файл никуда не подключен: ссылку не от чего считать
+                # ссылка в подключаемом файле работает на странице, которая его подключает: путь считается от нее
+                dests = [_link_dest(h, path, pages) for h in (includers.get(page) or [page])]
+                dest = next((d for d in dests if d in pages), None)
+                if dest is None:
+                    links.append({"lang": lang, "file": page, "line": n, "target": target, "why": "страницы нет"})
+                    continue
                 if anchor and re.fullmatch(r"[a-z0-9\-_]+", anchor) and anchors.get(dest) and anchor not in anchors[dest]:
                     links.append({"lang": lang, "file": page, "line": n, "target": target, "why": "раздела с таким якорем нет"})
             if not in_code and P.RELEASE_NOTES_DIR not in page.split("/") and not line.lstrip().startswith(("|", "+")):
@@ -313,6 +356,31 @@ UI_QUOTED_RE = re.compile(r"«([^»\n]{3,60})»|\"([^\"\n]{3,60})\"|“([^”\n]
 CODE_LIKE_RE = re.compile(r"\{\{|[/\\_]|\.\w|\d{2,}|^[^A-Za-zА-Яа-яЁё]*$")
 
 
+def _same_words(term: str, words: List[str]) -> List[str]:
+    """Тексты интерфейса из тех же слов в другом порядке или регистре («Index card and lists» - «Card index and lists»)."""
+    bag = sorted(w.lower() for w in re.findall(r"\w+", term))
+    return [w for w in words if w != term and sorted(x.lower() for x in re.findall(r"\w+", w)) == bag]
+
+
+def apply_auto_names(ds, docs, findings: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    """Название, у которого в интерфейсе ровно один вариант из тех же слов, код заменяет сам, без агента."""
+    done = []
+    for x in [f for f in findings if f.get("auto")]:
+        f = f"docs/MD_{x['lang']}/docs/{x['file']}"
+        text = docs.text(f)
+        if text is None:
+            continue
+        lines = text.split("\n")
+        q = "[«»\"“”]"
+        new = re.sub("(" + q + ")" + re.escape(x["target"]) + "(" + q + ")", lambda m: m.group(1) + x["auto"] + m.group(2), lines[x["line"] - 1])
+        if new != lines[x["line"] - 1]:
+            lines[x["line"] - 1] = new
+            docs.put(f, "\n".join(lines))
+            done.append({"file": f, "what": f"«{x['target']}» -> «{x['auto']}» (текст интерфейса)"})
+    docs.save()
+    return done
+
+
 def _inflection(a: str, b: str) -> bool:
     """Та же фраза в другой форме слова («Типа совпадения» и «Тип совпадения»): не устаревшее название."""
     wa, wb = a.lower().split(), b.lower().split()
@@ -397,10 +465,10 @@ def dead_names(ds, pages: Set[str], vocab: Dict[str, Set[str]]) -> List[Dict[str
         seen.add((lang, page, term))
         code = list(dict.fromkeys(c for k in ks for c in _package_code(new_root, ds.slot(P.SLOT_CODE_OLD), k["file"], term, changed, DEAD_CODE_FILES)))
         words = sorted(vocab.get(lang, set()))
-        bag = sorted(term.lower().split())
-        near = [w for w in words if sorted(w.lower().split()) == bag]          # те же слова в другом порядке
-        near += [w for w in difflib.get_close_matches(term, words, n=3, cutoff=0.5) if w not in near]
+        same = _same_words(term, words)
+        near = same + [w for w in difflib.get_close_matches(term, words, n=3, cutoff=0.5) if w not in same]
         out.append({"lang": lang, "file": page, "line": n, "target": term, "new": False, "code": code,
+                    "auto": same[0] if len(same) == 1 else None,
                     "why": ("похожие тексты интерфейса новой версии: " + ", ".join(f"«{w}»" for w in near[:3]) + "; " if near else "")
                            + "ключ этого текста не используется в коде прошлой версии: на экране его не было и до релиза; "
                            "что выводится на этом месте, ищи в коде пакета `code/" + str(Path(code[-1]).parent) + "/` (сначала: "
@@ -431,7 +499,9 @@ def outdated_names(ds, pages: Set[str], vocab: Dict[str, Set[str]]) -> List[Dict
                     if not near or _inflection(term, near[0]):
                         continue
                     seen.add((page, term))
+                    same = _same_words(term, words)
                     out.append({"lang": lang, "file": page, "line": n, "target": term, "new": False,
+                                "auto": same[0] if len(same) == 1 else None,
                                 "why": "в интерфейсе новой версии такого названия нет; похожие: " + ", ".join(f"«{x}»" for x in near)})
     return out
 

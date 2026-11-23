@@ -15,6 +15,13 @@ from . import product as P
 from .common import read_text, save_text
 
 
+def _h1(path: Path) -> List[str]:
+    for line in (read_text(path) or "").splitlines():
+        if line.startswith("# "):
+            return [line[2:].strip()]
+    return []
+
+
 def page_titles(index: Dict[str, Any], lang: str) -> Dict[str, str]:
     out = {}
     for f in index.get(lang, {}).get("files", []):
@@ -47,15 +54,18 @@ def section_choices(index: Dict[str, Any]) -> List[str]:
     return [P.RN_TITLES["rus"]["general"]] + sorted({t for p, t in titles.items() if p.startswith("user-manual/")})
 
 
-def agent_label(section: Optional[str], index: Dict[str, Any], lang: str) -> Optional[str]:
-    """Метка раздела на нужном языке по русскому названию, которое выбрал агент."""
+def agent_label(section: Optional[str], index: Dict[str, Any], lang: str, current: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    """Метка раздела на нужном языке по русскому названию, которое выбрал агент.
+
+    Страница ищется по названиям прошлого релиза и рабочей копии; метка берется из рабочей копии (current), если она есть.
+    """
     if not section:
         return None
     if section == P.RN_TITLES["rus"]["general"]:
         return P.RN_TITLES[lang]["general"]
-    ru = page_titles(index, "rus")
-    page = next((p for p, t in ru.items() if t == section), None)
-    return page_titles(index, lang).get(page) if page else None
+    sources = [x for x in (current, index) if x]
+    page = next((p for src in sources for p, t in page_titles(src, "rus").items() if t == section), None)
+    return next((page_titles(src, lang)[page] for src in sources if page in page_titles(src, lang)), None) if page else None
 
 
 def rn_title(rn_dir: Path, lang: str, cat: str) -> str:
@@ -138,7 +148,11 @@ def write_release_notes(ds, units: List[Dict[str, Any]], decisions: Dict[str, st
         root = DOCS.workspace_root(ds.result_dir, lang) / P.RELEASE_NOTES_DIR
         target = root / v["release_notes_file"]
         prev = read_text(root / v["previous_release_notes_file"]) if v["previous_release_notes_file"] else None
-        titles, T = page_titles(index, lang), P.RN_TITLES[lang]
+        # названия страниц - по рабочей копии: правки этого релиза могли переименовать раздел
+        cur = {l: {"files": [{"path": str(p.relative_to(DOCS.workspace_root(ds.result_dir, l))),
+                              "headings": [{"level": 1, "text": h} for h in _h1(p)]}
+                             for p in sorted(DOCS.workspace_root(ds.result_dir, l).rglob("*.md"))]} for l in ds.langs}
+        titles, T = page_titles(cur, lang), P.RN_TITLES[lang]
         L: List[str] = [f"# [{v['release']}] {v['release_date'] or 'ДД.ММ.ГГГГ'} {{-}}", ""]
         if prev:
             rows = prev.splitlines()
@@ -160,7 +174,7 @@ def write_release_notes(ds, units: List[Dict[str, Any]], decisions: Dict[str, st
             by_label: Dict[str, List[str]] = {}
             for u in group:
                 row = lines[u["id"]]
-                label = agent_label(row.get("section"), index, lang) or section_label(u, titles, lang)
+                label = agent_label(row.get("section"), index, lang, cur) or section_label(u, titles, lang)
                 by_label.setdefault(label, []).append(row["ru" if lang == "rus" else "en"].strip())
             order = sorted(by_label, key=lambda x: (x != T["general"], list(by_label).index(x)))
             for label in order:

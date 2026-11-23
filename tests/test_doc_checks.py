@@ -228,5 +228,34 @@ class DeadNamesTest(unittest.TestCase):
         self.assertIn("«Если, сохранять»", found[0]["why"])                       # похожий текст интерфейса предложен
 
 
+
+class IncludeLinksTest(unittest.TestCase):
+    def test_link_in_include_counts_from_including_page_and_heading_anchors_exist(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, True)
+        tree(root, {"user-manual/120_Tasks.md": "# Tasks\n\n## Export faces\n\n## Импорт {#batch-import}\n",
+                    "user-manual/130_Lists.md": '# Lists\n\n{% include "../includes/101_End.md" %}\n',
+                    "includes/101_End.md": "[a](../120_Tasks#export-faces) [b](../120_Tasks#batch-import) [c](../120_Tasksd#x) "
+                                           "[d](../120_Tasks#no-such)\n"})
+        res = CHK.check_tree(root, root, "eng")
+        self.assertEqual(sorted((x["target"], x["why"]) for x in res["links"]),
+                         [("../120_Tasks#no-such", "раздела с таким якорем нет"), ("../120_Tasksd#x", "страницы нет")])
+
+
+class AutoNamesTest(unittest.TestCase):
+    def test_same_words_in_other_order_are_replaced_by_code(self):
+        class FakeDocs:
+            def __init__(self): self.t = {"docs/MD_eng/docs/user-manual/110_Card.md": '# "Index card and lists" section\n'}
+            def text(self, f): return self.t.get(f)
+            def put(self, f, x): self.t[f] = x
+            def save(self): pass
+        d = FakeDocs()
+        self.assertEqual(CHK._same_words("Index card and lists", ["Card index and lists", "Cards and lists"]), ["Card index and lists"])
+        done = CHK.apply_auto_names(None, d, [{"lang": "eng", "file": "user-manual/110_Card.md", "line": 1,
+                                               "target": "Index card and lists", "auto": "Card index and lists"}])
+        self.assertEqual(len(done), 1)
+        self.assertEqual(d.t["docs/MD_eng/docs/user-manual/110_Card.md"], '# "Card index and lists" section\n')
+
+
 if __name__ == "__main__":
     unittest.main()

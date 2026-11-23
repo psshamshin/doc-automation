@@ -87,8 +87,55 @@ def _side(base: List[str], other: Optional[List[str]]) -> Dict[str, Any]:
     return {"state": state, "ins": ins, "missing": False}
 
 
+def _new_file_rows(gen: List[str], ref: List[str]) -> Dict[str, Any]:
+    """Новый файл есть и у пайплайна, и у техписа: строки выравниваются друг по другу, похожие - в одну строку."""
+    rows: List[List[Any]] = []
+    stats = {"same": 0, "diff": 0, "gen": 0, "ref": 0}
+
+    def put(g: Optional[str], r: Optional[str]) -> None:
+        if g is not None and r is not None:
+            if g == r:
+                rows.append(["", html.escape(g), html.escape(r), "add", "add", 0])
+                stats["same"] += 1
+            else:
+                gg, rr = _words(g, r)
+                rows.append(["", gg, rr, "chg", "chg", 0])
+                stats["diff"] += 1
+        elif g is not None:
+            rows.append(["", html.escape(g), "", "add", "pad", 0])
+            stats["gen"] += 1
+        else:
+            rows.append(["", "", html.escape(r), "pad", "add", 0])
+            stats["ref"] += 1
+
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, gen, ref, autojunk=False).get_opcodes():
+        if tag == "equal":
+            for k in range(i2 - i1):
+                put(gen[i1 + k], ref[j1 + k])
+            continue
+        p = j1
+        for i in range(i1, i2):
+            best, bj = 0.0, None
+            for j in range(p, j2):
+                r = difflib.SequenceMatcher(None, gen[i], ref[j], autojunk=False).ratio()
+                if r > best:
+                    best, bj = r, j
+            if bj is not None and best >= PAIR_MIN:
+                for j in range(p, bj):
+                    put(None, ref[j])
+                put(gen[i], ref[bj])
+                p = bj + 1
+            else:
+                put(gen[i], None)
+        for j in range(p, j2):
+            put(None, ref[j])
+    return {"rows": rows, "stats": stats, "gen_missing": False, "ref_missing": False, "base_missing": True}
+
+
 def file_rows(base: Optional[str], gen: Optional[str], ref: Optional[str]) -> Dict[str, Any]:
     """Строки таблицы: [база, пайплайн, техпис, вид пайплайна, вид техписа, номер строки базы]."""
+    if base is None and gen is not None and ref is not None:
+        return _new_file_rows(gen.splitlines(), ref.splitlines())
     b = (base or "").splitlines()
     g = _side(b, gen.splitlines() if gen is not None else None)
     r = _side(b, ref.splitlines() if ref is not None else None)
