@@ -223,12 +223,12 @@ input[type=range]{padding:0;width:120px;accent-color:var(--acc)}
 .stats{font-size:13px;margin-top:6px}
 .stats b.s{color:var(--same)} .stats b.d{color:var(--diff)}
 main{flex:1;min-height:0;padding:10px 16px 12px}
-.panes{height:100%;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) 28px minmax(0,1fr);border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--card)}
-.pane{display:flex;flex-direction:column;min-width:0;border-left:1px solid var(--line)}
+.panes{height:100%;display:grid;grid-template-rows:minmax(0,1fr);grid-template-columns:minmax(0,1fr) minmax(0,1fr) 28px minmax(0,1fr);border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--card)}
+.pane{display:flex;flex-direction:column;min-width:0;min-height:0;border-left:1px solid var(--line)}
 .pane:first-child{border-left:0}
 .ph{flex:none;padding:7px 10px;border-bottom:1px solid var(--line);font-weight:600;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ph small{font-weight:400;color:var(--muted);margin-left:6px}
-.sc{flex:1;overflow:auto;font:var(--fs)/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}
+.sc{flex:1;min-height:0;overflow:auto;font:var(--fs)/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}
 .pane.marks .sc{overflow:hidden}
 .in{display:inline-block;min-width:100%}
 .r{height:calc(var(--fs)*1.5);line-height:calc(var(--fs)*1.5);white-space:pre;padding:0 10px 0 8px;border-left:3px solid transparent}

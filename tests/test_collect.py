@@ -137,6 +137,7 @@ class CompareViewTest(unittest.TestCase):
         page = CV.render_page({"rus": [{"path": "p.md", "kind": "gen", **fr}]}, "Сравнение")
         self.assertNotIn("<script>x</script>", page)
         self.assertNotIn("http", page)
+        self.assertIn(".sc{flex:1;min-height:0;overflow:auto", page)         # окна прокручиваются, а не растягиваются по содержимому
 
 
 class ProjectFilesTest(unittest.TestCase):
