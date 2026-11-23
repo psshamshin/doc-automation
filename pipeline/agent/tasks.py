@@ -399,8 +399,6 @@ def _release_notes_context(ds, units: Dict[str, Any], decisions: Dict[str, str])
         state = {"doc": "изменение", "langs": "изменение: набор языков", "rn": "исправление ошибки",
                  "agent": "решение принимаешь ты в задании decide: давай строку, только если решил doc, rn или langs"}[d]
         L += [f"### {uid} ({state})", ""]
-        hint = "fix" if DRAFT.is_fix_unit(u, decisions) else "change"
-        L.append(f"- раздел по записям разработчиков (подсказка, решаешь по смыслу): {hint}")
         langs = app_locales_text(ds) if d == "langs" else ""
         if langs:
             L.append(f"- {langs}")

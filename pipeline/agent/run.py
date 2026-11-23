@@ -49,6 +49,8 @@ def sync_docs(ds) -> None:
 def write_task(ds, rec: Dict[str, Any], prompts: Dict[str, str], units_by_id: Dict[str, Any]) -> None:
     """Файл задания и его источники в папке агента."""
     w = workspace(ds)
+    if rec["unit"] == "AUTO":
+        return                                       # правки внес код: задания нет
     save_text(w / "tasks" / f"{rec['id']}.md", prompts[rec["id"]])
     if rec["unit"] and rec["unit"] in units_by_id:
         for dst, src in unit_sources(ds, units_by_id[rec["unit"]]).items():
@@ -236,6 +238,19 @@ def run(ds, units: List[Dict[str, Any]], conf: Dict[str, Any], decisions: Dict[s
         fixes = CHK.findings_to_fix(CHK.run_checks(ds), touched, CHK.rename_findings(ds, renames),
                                     CHK.outdated_names(ds, release_pages, _ui_vocabulary(ds)),
                                     CHK.dead_names(ds, release_pages, _ui_vocabulary(ds)))
+        auto = CHK.apply_auto_names(ds, docs, fixes)          # однозначные замены названий вносит код
+        if auto:
+            rows = []
+            for a in auto:
+                m = re.match(r"^docs/MD_(\w+)/docs/(.+)$", a["file"])
+                rows.append(f"| (код) | {m.group(1)} | {m.group(2)} | {a['what']} | К6 |\n")
+            trace = ds.result_dir / "trace.md"
+            save_text(trace, (read_text(trace) or "") + "".join(rows))
+            prompts["auto_names"] = ""
+            recs.append({"id": "auto_names", "unit": "AUTO", "kind": "checks", "status": "done", "note": "названия заменены кодом",
+                         "problems": [], "applied": auto, "decision": None, "steps": [], "questions": [], "summary": "",
+                         "approx": [], "answer_sha": None, "seconds": None})
+            fixes = [x for x in fixes if not x.get("auto")]
         cu = checks_unit(fixes)
         if cu:
             by_id[CHECKS_ID] = cu
