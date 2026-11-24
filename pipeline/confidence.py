@@ -11,7 +11,7 @@ from typing import Any, Dict, List
 
 # критерии группы И (docs/RULES.md)
 RULE_OF = {"product_unclear": "И1", "visibility_unclear": "И2", "text_only": "И3", "shared_strings": "И4",
-           "other_product_files": "И5", "jira_other_product": "И9"}
+           "other_product_files": "И5", "words_and_jira": "И6", "jira_other_product": "И9"}
 
 
 def _evidence_keys(u: Dict[str, Any]) -> set:
@@ -56,6 +56,11 @@ def assess(units: List[Dict[str, Any]], rules: Dict[str, Any]) -> Dict[str, Dict
             src = [f for f in u["files"] if f.get("relevant") and f["category"] == "source"]
             used = [f for f in src if f["reachable_from_app"]]
             by_text = rule == "Г5" or (rule == "Г2" and d["visibility"]["reasons"][0].startswith("в тексте"))
+            if by_text and d["product"].get("jira_conflict"):
+                add("words_and_jira", "decision",
+                    "видимость определена только по словам в записи (" + d["visibility"]["reasons"][0] + "), а Jira относит "
+                    f"задачу к другому продукту ({d['product']['jira_conflict']}): возможно, для POINT 2 это внутренняя переделка "
+                    "общего кода", "только слова в записи, Jira: " + d["product"]["jira_conflict"])
             if by_text and not used:
                 add("text_only", "decision",
                     "видимость определена только по словам в записи (" + d["visibility"]["reasons"][0]

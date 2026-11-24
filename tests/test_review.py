@@ -56,6 +56,17 @@ class ConfidenceTest(unittest.TestCase):
         u["files"] = [dict(f, reachable_from_app=False) for f in u["files"]]
         self.assertIn("И5", [f["rule"] for f in CONF.assess([u], RULES)[u["id"]]["flags"]])
 
+    def test_visibility_by_words_and_jira_other_product_goes_to_the_agent(self):
+        import copy
+        u = copy.deepcopy(self.units["GUI-105"])
+        u["decision"]["visibility"] = {"value": "visible", "rule": "Г5", "reasons": ["в тексте: фильтр"]}
+        u["decision"]["product"]["jira_conflict"] = "point3"
+        c = CONF.assess([u], RULES)[u["id"]]
+        self.assertEqual(c["level"], "low")
+        self.assertIn("И6", [f["rule"] for f in c["flags"]])
+        u["decision"]["product"].pop("jira_conflict")                  # без Jira другого продукта И6 нет
+        self.assertNotIn("И6", [f["rule"] for f in CONF.assess([u], RULES)[u["id"]]["flags"]])
+
 
 class ReviewFileTest(unittest.TestCase):
     @classmethod
