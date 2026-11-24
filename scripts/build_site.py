@@ -144,6 +144,9 @@ def main() -> None:
         src, _, img = paths.partition("@")
         src = Path(src).resolve()
         images = Path(img).resolve() if img else src
+        missing = [str(d) for d in {src, images} if not any((d / f"MD_{l}" / "docs").is_dir() for l in LANGS)]
+        if missing:
+            sys.exit(f"{label}: нет документации (папок MD_rus/docs, MD_eng/docs) в: " + ", ".join(missing))
         values = {**ci_variables(images), **ci_variables(src), "BUILD_MARK": a.version}      # у рабочей копии файла CI нет
         rows.append((label, build(label, src, images, values, out, stage)))
     cards = "".join(f"<div class=c><h2>{l}</h2>" + "".join(f"<a href='{u}'>{k}</a>" for k, u in links) + "</div>" for l, links in rows)
@@ -152,7 +155,7 @@ def main() -> None:
         ".c{border:1px solid #ccc;border-radius:8px;padding:12px 20px;margin:12px 0}a{margin-right:16px}</style>"
         f"<h1>Документация {a.version}: варианты</h1>{cards}", encoding="utf-8")
     shutil.rmtree(stage, ignore_errors=True)
-    print(f"открыть: python3 -m http.server -d {out} 8000  ->  http://localhost:8000")
+    print(f"Запустить просмотр:\n  python3 -m http.server -d {out} 8000\nи открыть в браузере http://localhost:8000")
 
 
 if __name__ == "__main__":
